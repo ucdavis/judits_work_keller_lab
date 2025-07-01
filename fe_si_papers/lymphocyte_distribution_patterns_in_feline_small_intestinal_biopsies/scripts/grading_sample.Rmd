@@ -1,0 +1,279 @@
+---
+title: "grading_sample"
+author: "Wulcan"
+date: "2025-06-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+This is to calculate the sample size for comparing lymphocyte distribution grades (by pathologists) with AI-derived lymphocyte distribution features. 
+
+Data on percentages, and ANOVA effect size for pathologists grade (majority opinion) vs normalized lymphocyte count (per wsi) from the paper "AI-based quantification of lymphocytes in feline small intestine" (Wulcan et al 2024, https://doi.org/10.1177/0300985824128682) is used for estimating prevalence of different grades and effect size. This should be conservative, since the intended analysis will have a higher spatial granularity.
+
+## Rationale
+Grade is a qualitative metric on a four grade scale (normal, mild, moderate, marked)
+and mean distance to closest neighbor is quantitative. Analysis of variance (ANOVA) 
+can be used to determine if the variance between groups is significantly larger than
+the variance within groups. 
+With just one categorical variable (but four levels), a one-way many groups anova is appropriate.
+I do not expect the distance to nearest neighbor values to be normally distributed.
+As a rough rule of thumb, if the groups are 2-9 the sample size for each group should be at least 15. 
+The effect size for an AN
+To calculat number of observations per group, this requires number of groups (k, 4),  effect size (Cohens f), signigicance level and power.
+
+
+## Calculate effect size based on "AI-based quantificiation of lymphocytes paper"
+```{r}
+library(tidyverse)
+library(effectsize)
+library(pwr)
+library(jsonlite)
+
+#Read in data from previous paper 
+grade_vs_density <- readRDS("~/Library/CloudStorage/Box-Box/Projects/AI/paper/AIFeBx_supplemental/test_analysis/output/wsiAI_vs_path/WSI_validationData.rds") %>%
+  select(slide_name, median_grade, class_label, density_1000um2_median)
+
+# Calculate effect size for previous sample
+cohen_f_results <- grade_vs_density %>%
+  group_by(class_label) %>%
+  do({
+    model <- aov(density_1000um2_median ~ as.factor(median_grade), data = .)
+    #print(summary(model))
+    f_val <- cohens_f(model, partial = FALSE)
+    #print(f_val)
+    data.frame(cohen_f = f_val$Cohens_f[1])
+  })
+
+# Calculate number of observations needed for new group using the lower of the two
+effect_size <- min(cohen_f_results$cohen_f)     # Cohen's f
+k <- 4                  # Number of groups
+alpha <- 0.05
+power <- 0.80
+
+# Sample size calculation
+power_anova <- pwr.anova.test(k = k, f = effect_size, sig.level = alpha, power = power)
+
+n_per_grade <- power_anova$n
+
+#Calculate frequency of grades 
+grade_percentage <- grade_vs_density %>%
+  group_by(class_label, median_grade) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(class_label) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+lowest_grade_prevalence <- min(grade_percentage$percentage)
+
+total_n <- (n_per_grade / lowest_grade_prevalence) * 100
+
+print(total_n)
+```
+
+### Random sample from all scanned images
+Sample 100 images (not more than one per bx_id and vmacs_patient_id)
+Exclude any images used for training/tuning of models used in the paper, only use H&E stained. 
+Sample size calculation 89, (estimate 85% retainment after excluding low quality slides (estimated in labl_2020_tuning set - 105 wsis for this should account for it)
+```{r sample}
+library(dplyr)
+
+set.seed(12)
+
+#Use image_index with duplicate slides removed
+image_index_deduplicated <- fromJSON("~/Library/CloudStorage/Box-Box/Projects/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json")
+
+#Only used H&E stained images
+image_index_he <- image_index_deduplicated %>%
+  filter(staining == "he") 
+
+#Remove any images used for AI model development (training/tuning)
+image_index_development_slides_removed <- image_index_he %>%
+  filter(is.na(use_set_labl_2020) | use_set_labl_2020 == "test")
+
+#Only one slide per biopsy id
+# Randomly select one row per bx_id
+no_dup_bx <- image_index_development_slides_removed %>%
+  group_by(bx_id) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Only one slide per patient id (for vmacs cases)
+has_pid <- no_dup_bx %>% filter(!is.na(vmacs_patient_id))
+no_pid  <- no_dup_bx %>% filter(is.na(vmacs_patient_id))
+
+# Randomly select one row per non-NA vmacs_patient_id
+has_pid_unique <- has_pid %>%
+  group_by(vmacs_patient_id) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Combine and sample 90
+candidates <- bind_rows(has_pid_unique, no_pid)
+
+sampled_images <- candidates %>% sample_n(105)
+
+write_json(sampled_images, "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/grading_sample/grading_sample.json", pretty = TRUE)
+
+
+```
+
+### Sample mucosal fragments from included images
+For this chunk, one mucosal fragment for each included image is sampled.
+The images are first processed with the model "fragments" to identify tissue fraggments and classify them as original or dulicates (to remove duplicate sections), the output fragments are manually reviewed by jmw (at low magnificaiton) to exclude fragments without small intestine, with mucosa destructive lesions or with MALT. The manually reviewed fragments are then classified with the model mucosa - to isolate regions of small intestinal mucosa, and classify them based on orientation and artefact. After exclusion of mucosal segments with inadequate orientation or artefact, and mucosal segments < 500,000 um2  one mucosal segments per wsi is randomly selected.
+```{r}
+library(jsonlite)
+library(tidyverse)
+
+set.seed(62)
+
+mucosa_metadata_grading_sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/mucosa/output/mucosa/mucosa_metadata_grading_sample.json")  %>% #n 1408 - contains copies
+  group_by(name) %>%
+  slice_sample(n = 1) %>%  #820 duplicates removed
+  ungroup()
+
+quality_mucosa <- mucosa_metadata_grading_sample %>%
+  group_by(image_name) %>% 
+  filter(area_1000_um2 >500) %>% #596 small removed
+  filter(orientation_class == "adequate" | orientation_class == "marginal") %>% #432 inaequate orientaiton removed
+  filter(artefact_class == "adequate" | artefact_class == "marginal") #225 inadequate quality removed
+
+mucosa_metadata_grading_sample_one <- quality_mucosa %>% 
+  group_by(image_name) %>%       
+  slice_sample(n = 1) %>%         
+  ungroup()    
+
+write_json(mucosa_metadata_grading_sample_one, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/sampled_mucosa.json", pretty = TRUE)
+```
+
+### Extract tiffs for included mucosa
+To provide pathologists with cropped wsis with just the mucosal segment of interest from each ws:
+- a qupath project for just the WSIs of interest is created
+- a txt file with image names are generated to for reading to qupath
+- geojson for the mucosal segments of interest are copied to a specific folder
+- tiffs (downsampled by 2 are extracted with qupath with a custom groovy script)
+- the cropped tiffs are uploaded to aiforia for pathologist review
+
+```{r}
+#read_in_sample and add filename for associated geojson
+sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/sampled_mucosa.json")  %>%
+  mutate(file_name = paste(name, "mucosa.geojson", sep = "_"))
+
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_grading_sample.json") %>% filter(image_name %in% sample$image_name)
+
+file_paths <- subset$file_path
+
+writeLines(file_paths, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies//output/grading_sample/sampled_mucosa_paths.txt")
+
+## Copy samples mucosa outlines to separate folder (funcrtion from fe_si_images/select_subset/)
+
+origin_folder <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/mucosa/output/mucosa/"
+destination_folder <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/sampled_mucosa/"
+
+file_names <- sample$file_name
+
+copy_selected_files(origin_folder, destination_folder, file_names)
+
+grading_sample_template <- sample %>% select(name) %>%
+  mutate(lymphocyte_size = "", 
+         lymphocyte_homogeneity = "",
+         villi_epithelium_lymphocytes_cellularity= "",
+         villi_epithelium_lymphocytes_clustering = "",
+         villi_epithelium_lymphocytes_junctional_gradient = "",
+         villi_lamina_propria_lymphocytes_cellularity = "",
+         villi_lamina_propria_lymphocytes_patchy_infiltration = "",
+         villi_lamina_propria_lymphocytes_junctiona_gradient = "",
+         crypts_epithelium_lymphocytes_cellularity= "",
+         crypts_epithelium_lymphocytes_clustering = "",
+         crypts_epithelium_lymphocytes_junctional_gradient = "",
+         crypts_lamina_propria_lymphocytes_cellularity = "",
+         crypts_lamina_propria_lymphocytes_patchy_infiltration = "",
+         crypts_lamina_propria_lymphocytes_junctional_gradient = "",) %>%
+  mutate(
+    # 1. extract *leading* digits (may be NA) - to arrange same order as aiforia
+    num_prefix = str_extract(name, "^0*[0-9]+"),
+    num_val    = as.numeric(num_prefix),          # numeric value of that prefix
+    rest       = str_replace(name, "^0*[0-9]+", ""),
+    rest       = tolower(rest)                    # case-insensitive alpha ordering
+  ) %>% 
+  arrange(
+    is.na(num_val),   # numbers (FALSE) first, non-numbers (TRUE) after
+    num_val,          # numeric order: 4 < 24
+    rest,             # within same number, "otb" before "xyz"
+    tolower(name)     # final tie-break (pure-letter group)
+  ) %>% 
+  select(-num_prefix, -num_val, -rest)     
+
+write_xlsx(grading_sample_template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/template_grading_sample.xlsx")
+                       
+```
+
+
+#### grading sample orientation
+To assess orientation a second sample of mucosa segments (from the same image sample) 
+
+```{r}
+set.seed(62)
+
+mucosa_metadata_grading_sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/mucosa/output/mucosa/mucosa_metadata_grading_sample.json")  %>% #n 1408 - contains copies
+  group_by(name) %>%
+  slice_sample(n = 1) %>%  #820 duplicates removed
+  ungroup()
+
+quality_mucosa <- mucosa_metadata_grading_sample %>%
+  group_by(image_name) %>% 
+  filter(area_1000_um2 >500) 
+
+mucosa_metadata_grading_sample_orientation <- quality_mucosa %>% 
+  group_by(image_name) %>%       
+  slice_sample(n = 1) %>%         
+  ungroup()    
+
+write_json(mucosa_metadata_grading_sample_orientation, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/grading_sample_orientation.json", pretty = TRUE)
+
+#read_in_sample and add filename for associated geojson
+sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/grading_sample_orientation.json")  %>%
+  mutate(file_name = paste(name, "mucosa.geojson", sep = "_"))
+
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_grading_sample.json") %>% filter(image_name %in% sample$image_name)
+
+file_paths <- subset$file_path
+
+writeLines(file_paths, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies//output/grading_sample/sample_orientation.txt")
+
+## Copy samples mucosa outlines to separate folder (funcrtion from fe_si_images/select_subset/)
+
+origin_folder <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/mucosa/output/mucosa/"
+destination_folder <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/orientation_sample/"
+
+file_names <- sample$file_name
+
+copy_selected_files(origin_folder, destination_folder, file_names)
+
+orientation_template <- sample %>% select(name) %>%
+  mutate(orientation = "", 
+         artefact_villi = "", 
+         artefact_crypts = "") %>%
+  mutate(
+    # 1. extract *leading* digits (may be NA) - to arrange same order as aiforia
+    num_prefix = str_extract(name, "^0*[0-9]+"),
+    num_val    = as.numeric(num_prefix),          # numeric value of that prefix
+    rest       = str_replace(name, "^0*[0-9]+", ""),
+    rest       = tolower(rest)                    # case-insensitive alpha ordering
+  ) %>% 
+  arrange(
+    is.na(num_val),   # numbers (FALSE) first, non-numbers (TRUE) after
+    num_val,          # numeric order: 4 < 24
+    rest,             # within same number, "otb" before "xyz"
+    tolower(name)     # final tie-break (pure-letter group)
+  ) %>% 
+  select(-num_prefix, -num_val, -rest)     
+
+
+
+write_xlsx(orientation_template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/grading_sample/template_orientation.xlsx")
+```
+
+

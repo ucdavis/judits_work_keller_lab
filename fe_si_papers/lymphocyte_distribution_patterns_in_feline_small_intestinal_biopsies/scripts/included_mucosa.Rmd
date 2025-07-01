@@ -1,0 +1,63 @@
+---
+title: "included_mucosa"
+author: "Wulcan"
+date: "2025-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+This is to include/exclude mucosal fragments based on manual review and correction of automated classification
+
+
+```{r, message=FALSE, warning=FALSE}
+library(jsonlite)
+library(readxl)
+library(writexl)
+library(tidyverse)
+
+reviewed_mucosa <- read_xlsx("~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/input/included_mucosa_reviewed.xlsx") %>%
+  filter(classification != "inadequate") %>%
+  mutate(excluded = case_when(exclusion_reason == "inadequate_orientation" |
+                                exclusion_reason == "pancreas" |
+                                exclusion_reason == "si_and_stomach" |
+                                exclusion_reason == "lnn" |
+                                exclusion_reason == "lesion" |
+                                exclusion_reason == "fp_crypts_and_villi_in_submucosa" |
+                                exclusion_reason == "fn" ~ TRUE,
+                              TRUE ~ FALSE))
+
+exclude <- reviewed_mucosa %>% select(name, excluded) %>%
+  filter(excluded)
+
+origin_folder <- "~/Library/CloudStorage/Box-Box/Projects/fe_si_models/artefact/output/artefact/"
+destination_folder <- "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/included_mucosa/"
+
+included_mucosa_list <- fromJSON("~/Library/CloudStorage/Box-Box/Projects/fe_si_models/artefact/output/artefact/template_artefacts.json") %>%
+  rename(artefact_class = classification) %>%
+  filter(artefact_class == "adequate" | artefact_class == "marginal") %>%
+  distinct(name, .keep_all = TRUE) %>%
+  mutate(file_name = paste0(name, "_si_artefact.geojson")) %>%
+  filter(!(name %in% exclude$name))
+
+
+write_json(included_mucosa_list, "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/included_mucosa/included_mucosa_list.json", pretty = TRUE)
+
+file_names <- included_mucosa_list$file_name
+
+#copy_selected_files(origin_folder, destination_folder, file_names) #borrowed function from select_subset
+
+grading_template <- included_mucosa_list %>% 
+  select(image_name, fragment_name, mucosa_name, name)
+
+write_xlsx(grading_template, "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/included_mucosa/grading_template_pilot.xlsx")
+
+qupath_fragments_dir <- "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/qupath_mucosa_tiff/"
+
+tiff_files <- list.files(path = qupath_fragments_dir, pattern = "\\.tiff$", full.names = TRUE)
+
+writeLines(tiff_files, "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/spatial_lc_clustering/output/included_mucosa//file_list_for_qupath_tuning_included_mucosa.txt")
+```

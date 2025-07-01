@@ -1,0 +1,135 @@
+---
+title: "explore_fragment_clustering"
+author: "Wulcan"
+date: "2025-06-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# ── packages ──────────────────────────────────────────────────────────
+library(dplyr)        # data wrangling
+library(ggplot2)      # quick checks / k-dist plot
+library(cluster)      # clusGap()
+library(factoextra)   # fviz_* helpers
+library(dbscan)       # DBSCAN
+library(mclust)       # model-based clustering
+
+lymphocyte_features <-  fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments_new.json")
+
+fixed <- c("image_name", "fragment_name", "mucosa_name")
+
+lymphocyte_features <- lymphocyte_features %>% 
+  select(
+    all_of(fixed),
+    all_of(sort(setdiff(names(.), fixed))
+  ))
+
+# ── 1. pull & pre-process the vector ──────────────────────────────────
+x <- lymphocyte_features |>                     # your data frame
+       pull(villi_epithelium_lymphocytes_mean_log_closest_neighbor_um ) |>
+       na.omit() |>                             # remove missing values
+       scale() |>                               # zero-mean, unit-sd
+       as.numeric()                             # strip attributes
+
+# (Optional) glimpse distribution
+ggplot(data.frame(x), aes(x)) + geom_histogram(bins = 40)
+
+# Wrap in a 1-column data.frame if a function needs it
+df1 <- data.frame(x)
+
+```
+#K- means
+```{r}
+## choose k ────────────────────────────────────────────────────────────
+set.seed(123)
+fviz_nbclust(df1, kmeans, method = "wss")          # elbow (within-SS)
+fviz_nbclust(df1, kmeans, method = "silhouette")   # average silhouette
+gap <- clusGap(df1, FUN = kmeans, nstart = 25,
+               K.max = 10, B = 50)                 # gap statistic
+fviz_gap_stat(gap)
+
+## fit with chosen k (replace 3 below with what you decide)
+km <- kmeans(x, centers = 6, nstart = 50)
+lymphocyte_features$kmeans_cluster <- km$cluster
+
+fviz_cluster(km, X,
+             stand = FALSE,        # already scaled
+             geom  = "point",      # "point" or "text"
+             show.clust.cent = TRUE)   # draws the centroids
+
+```
+
+# Db scan
+
+```{r}
+## pick eps with k-NN-distance plot (minPts ~ 2*dim ⇒ 4) --------------
+kNNdistplot(df1, k = 4)
+abline(h = 0.25, lty = 2)        # set to the “elbow” height you see
+
+## fit DBSCAN
+db <- dbscan(df1, eps = 0.25, minPts = 4)
+lymphocyte_features$dbscan_cluster <- db$cluster   # 0 = noise
+
+fviz_cluster(db, X)
+```
+
+
+
+
+
+
+# mean and sd (log_lc_dist)
+```{r}
+X <- lymphocyte_features %>%
+  select(villi_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um) %>%
+  na.omit() %>%           # drop rows with any NA in either column
+  scale()                 # zero-mean, unit-sd for each feature
+
+# keep row indices if you need to map clusters back later
+row_map <- attr(X, "scaled:center")  # optional bookkeeping
+```
+
+k-means
+```{r}
+# --- pick k with gap statistic (or elbow/silhouette) -------------
+set.seed(123)
+gap <- clusGap(X, FUN = kmeans, nstart = 25, K.max = 10, B = 50)
+fviz_gap_stat(gap)                       # visual
+k_opt <- maxSE(gap$Tab[ , "gap"],
+               gap$Tab[ , "SE.sim"], method = "firstSEmax")
+
+# --- final fit ----------------------------------------------------
+km <- kmeans(X, centers = k_opt, nstart = 50)
+
+lymphocyte_features$kmeans_cluster <- NA    # pre-fill
+lymphocyte_features$kmeans_cluster[as.numeric(rownames(X))] <- km$cluster
+
+```
+
+#DBSCAn
+```{r}
+# ---- Determine eps via k-NN distance plot ------------------------
+minPts <- 4                     # 2 × dimensions (2×2)
+kNNdistplot(X, k = minPts)
+abline(h = 0.25, lty = 2)       # choose the “elbow” height
+
+db <- dbscan(X, eps = 0.25, minPts = minPts)
+
+lymphocyte_features$dbscan_cluster <- NA
+lymphocyte_features$dbscan_cluster[as.numeric(rownames(X))] <- db$cluster
+
+fviz_cluster(db, X)
+
+```
+
+
+
+
+##next

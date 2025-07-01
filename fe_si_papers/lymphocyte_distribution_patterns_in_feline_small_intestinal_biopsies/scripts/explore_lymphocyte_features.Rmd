@@ -1,0 +1,382 @@
+---
+title: "explore_lymphocyte_features"
+author: "Wulcan"
+date: "2025-06-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+The objective of this is to explore a range of candidate lymphocyte features 
+to select for project inclusion
+
+
+- **lymphocyte cellularity**
+  - *lymphocytes_median_log_closest_neighbor_um* (left skewed - log transformation and median iqr)
+  - *lymphocyte_count_per_1000_um2*
+  - *epithelium_lamina_propria_ratio*
+  
+- **patchy infiltration / clustering**
+  - *lymphocytes_cluster_median_closest_neighbor_um*
+  - *lymphocytes_cluster_count_per_1000_um2*
+  - *lymphocytes_cluster_iqr_log_closest_neighbor_um*
+  - *lymphocytes_cluster_median_cluster_n_lymphocytes*
+  - *lymphocytes_cluster_iqr_log_cluster_n_lymphocytes *
+  - *lymphocytes_cluster_iqr_log_closest_junction_um*
+  - *lymphocytes_iqr_log_closest_neighbor_um * (left skewed - log transformation and median iqr) - low - clusters?
+
+- **junctional_gradient**
+  -*median_log_closest_junction_um*(left skewed - log transformation makes it right skewed)
+  -*lymphocytes_cluster_median_log_closest_junction_um*
+ 
+- **size**
+  -*mean_measured_area_um2 *
+- **heterogeneity**
+  -*sd_measured_area_um2 *
+
+   
+
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+
+
+
+lymphocyte_features <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments.json")
+
+lymphocyte_features_image_names <- lymphocyte_features$image_name
+
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_labl_2020_tuning.json") %>% 
+  filter(image_name %in% lymphocyte_features_image_names) 
+
+file_paths <- subset$file_path
+
+writeLines(file_paths, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/file_paths.txt")
+```
+
+
+
+
+
+## Explore villi_epithelium_lymphocytes_median_log_closest_neighbor_um as a measure of cellularity in villus epithelum
+
+```{r}
+villi_epithelum_lc_median_log_closest_neighbor <- lymphocyte_features %>%
+  select(image_name:mucosa_name, villi_epithelium_lymphocytes_median_log_closest_neighbor_um)
+
+
+distance_var <- "villi_epithelium_lymphocytes_median_log_closest_neighbor_um"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+
+
+
+```
+
+
+
+
+
+
+
+## Explore villi_epithelium_lymphocytes_cluster_median_closest_neighbor_um - as a measures of clusters
+
+```{r}
+villi_epithelum_lc_clusters_median_log_closest_neighbor <- lymphocyte_features %>%
+  select(image_name:mucosa_name, villi_epithelium_lymphocytes_cluster_median_log_closest_neighbor_um)
+
+
+distance_var <- "villi_epithelium_lymphocytes_cluster_median_log_closest_neighbor_um"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+
+
+
+```
+
+
+## Explore villi_epithelium_lymphocytes_iqr_log_closest_neighbor_um as a measure of clustering
+
+```{r}
+villi_epithelum_lc_iqr_log_closest_neighbor <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_epithelium_lymphocytes_iqr_log_closest_neighbor_um)
+
+
+distance_var <- "villi_epithelium_lymphocytes_iqr_log_closest_neighbor_um"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+
+
+
+```
+
+villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes
+```{r}
+villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes)
+
+
+distance_var <- "villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+```
+villi_epithelium_lymphocytes_median_log_closest_junction_um
+```{r}
+villi_epithelium_lymphocytes_median_log_closest_junction_um <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_epithelium_lymphocytes_median_log_closest_junction_um, villi_epithelium_lymphocytes_median_log_closest_junction_um) 
+
+distance_var <- "villi_epithelium_lymphocytes_median_log_closest_junction_um"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+```
+
+villi_lamina_propria_lymphocytes_median_log_closest_junction_um
+```{r}
+villi_lamina_propria_lymphocytes_median_log_closest_junction_um <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_lamina_propria_lymphocytes_median_log_closest_junction_um) 
+
+distance_var <- "villi_lamina_propria_lymphocytes_median_log_closest_junction_um"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+```
+
+villi_epithelium_lamina_propria_ratio
+```{r}
+villi_epithelium_lamina_propria_ratio <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_epithelium_lamina_propria_ratio) 
+
+distance_var <- "villi_epithelium_lamina_propria_ratio"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+```
+
+villi_lamina_propria_mean_measured_area_um2 (lymphocyte size)
+```{r}
+villi_lamina_propria_mean_measured_area_um2 <- lymphocyte_features %>%
+    select(image_name:mucosa_name, villi_lamina_propria_lymphocytes_mean_measured_area_um2) 
+
+distance_var <- "villi_lamina_propria_lymphocytes_mean_measured_area_um2"
+
+
+median_val <- median(lymphocyte_features[[distance_var]], na.rm = TRUE)
+q1 <- quantile(lymphocyte_features[[distance_var]], 0.25, na.rm = TRUE)
+q3 <- quantile(lymphocyte_features[[distance_var]], 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Create the plot
+ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red", linetype = "solid", linewidth = 0.8) +
+  geom_vline(xintercept = q1, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3, color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Distribution of", distance_var),
+    x = paste(distance_var, "(µm)"),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2), "\nIQR = ", round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+```
+

@@ -1,0 +1,539 @@
+---
+title: "lymphocyte_dist"
+author: "Wulcan"
+date: "2025-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+This is to compute the distance to closest neighbor and distance to closest junction for each lymphocyte in included mucosa fragments. 
+
+The analysis will be done per tissue fragment (after automatic filtering of inaadequate orientation
+and artefact)
+
+## Input
+- included_mucosa.json 
+- <image>_<fragment>_<mucosa>_lymphocyte_centroids.geojson (fe_si_models/combos/output/mapped_ai_output/ )
+Contains lymphocyte centroids coordinates (mapped by compartment and layer)
+- <image>_<fragment>_<mucosa>_mapped_ai_output.geojson (fe_si_models/combos/output/mapped_ai_output/ )
+Contains layers, tissue compartments and lymphocyte outline coordinates (grouped by class)
+
+```{r}
+Sys.setenv(OGR_GEOJSON_MAX_OBJ_SIZE = 0) #problem opening large file w/o this
+
+
+#Calculates the distance to closest neighbor, and the distance to the villi/crypts junction
+calculate_lymphocyte_distances <- function(ai_output, lymphocytes, pixel_length_um) {
+  library(dplyr)
+  library(sf)
+  library(nngeo)
+  
+
+  villi <- ai_output %>% 
+    filter(classification == "villi")
+  
+  crypts <- ai_output %>% 
+    filter(classification == "crypts")
+
+  junction <- st_intersection(
+    st_boundary(st_union(villi)),
+    st_boundary(st_union(crypts))
+  ) %>%
+    st_as_sf() %>%
+    rename(geometry = x)
+  
+  lymphocyte_centroids <- lymphocytes %>%
+    mutate(geometry = st_centroid(geometry))
+
+  lymphocyte_distances <- lymphocyte_centroids %>%
+    mutate(
+      closest_junction_px = as.numeric(st_distance(geometry, junction)),
+      closest_junction_um = closest_junction_px * pixel_length_um
+    ) %>%
+    group_by(classification) %>%
+    group_split() %>%
+    lapply(function(group) {
+      if (nrow(group) < 2) {
+        # Not enough points for nearest neighbor
+        group$closest_neighbor_px <- NA_real_
+        group$closest_neighbor_um <- NA_real_
+      } else {
+        # Safe k = 2, self = FALSE ensures the closest *other* neighbor
+        nearest_neighbor <- st_nn(group, group, k = 2, returnDist = TRUE)
+        # Take the second  neighbor's distance (skip self)
+        closest_neighbor_pxs <- sapply(nearest_neighbor$dist, `[`, 2)
+        group$closest_neighbor_px <- closest_neighbor_pxs
+        group$closest_neighbor_um <- closest_neighbor_pxs * pixel_length_um
+      }
+      return(group)
+    }) %>%
+    bind_rows() %>%
+    mutate(
+      log_closest_junction_um = log10(closest_junction_um + 1),
+      log_closest_neighbor_um = log10(closest_neighbor_um + 1)
+    ) %>%
+    st_drop_geometry()
+
+  return(lymphocyte_distances)
+}
+
+#Generate lymphocyte clusters
+generate_lymphocyte_clusters <- function(lymphocytes, pixel_length_um, dbscan_eps_um, dbscan_minPts, buffer_um = 3) {
+  library(dplyr)
+  library(sf)
+  library(dbscan)
+  library(tibble)
+
+  lymphocyte_centroids <- lymphocytes %>%
+    mutate(geometry = st_centroid(geometry))
+
+  # Store all input classifications
+  all_classifications <- unique(lymphocyte_centroids$classification)
+
+  # Process each group
+  cluster_list <- lymphocyte_centroids %>%
+    group_by(classification) %>%
+    group_split() %>%
+    lapply(function(group) {
+      coords <- st_coordinates(group)
+      eps_px <- dbscan_eps_um / pixel_length_um
+      clustering <- dbscan(coords, eps = eps_px, minPts = dbscan_minPts)
+
+      group <- group %>% mutate(cluster_id = clustering$cluster)
+
+      group_clusters <- group %>%
+        filter(cluster_id > 0) %>%
+        group_by(cluster_id) %>%
+        summarize(
+          geometry = st_union(geometry),
+          cluster_n_lymphocytes = n(),
+          image_name = first(image_name),
+          fragment_name = first(fragment_name),
+          mucosa_name = first(mucosa_name),
+          objectType = first(objectType),
+          isLocked = first(isLocked),
+          .groups = "drop"
+        ) %>%
+        arrange(desc(cluster_n_lymphocytes)) %>%
+        mutate(
+          classification = paste0(unique(group$classification), "_cluster"),
+          name = paste(classification, sprintf("%03d", row_number()), sep = "_"),
+          log_cluster_n_lymphocytes = log10(cluster_n_lymphocytes + 1)
+        ) %>%
+        st_buffer(dist = buffer_um / pixel_length_um) %>%
+        select(image_name:mucosa_name, name, classification, cluster_n_lymphocytes, log_cluster_n_lymphocytes, objectType, isLocked, geometry)
+
+      return(group_clusters)
+    })
+
+  # Bind together
+  lymphocyte_clusters <- bind_rows(cluster_list)
+
+  # Identify classifications that were missing from output
+  present_classes <- unique(lymphocyte_clusters$classification)
+  expected_classes <- paste0(all_classifications, "_cluster")
+  missing_classes <- setdiff(expected_classes, present_classes)
+
+  # Generate NA-filled rows for missing classifications
+  if (length(missing_classes) > 0) {
+    fallback_rows <- lapply(missing_classes, function(class_label) {
+      tibble(
+        image_name = unique(lymphocytes$image_name)[1],
+        fragment_name = unique(lymphocytes$fragment_name)[1],
+        mucosa_name = unique(lymphocytes$mucosa_name)[1],
+        name = paste0(class_label, "_000"),
+        classification = class_label,
+        cluster_n_lymphocytes = 0,
+        log_cluster_n_lymphocytes = NA_real_,
+        objectType = NA_character_,
+        isLocked = NA,
+        geometry = st_sfc(st_geometrycollection(), crs = st_crs(lymphocytes))
+      )
+    }) %>%
+      bind_rows()
+    
+    lymphocyte_clusters <- bind_rows(lymphocyte_clusters, fallback_rows)
+  }
+
+  return(lymphocyte_clusters)
+}
+
+summarize_lymphocyte_features <- function(ai_output, lymphocyte_distances, lymphocyte_cluster_distances, pixel_area_um2) {
+  library(dplyr)
+  library(tidyr)
+  library(sf)
+  
+  #Calculate compartment areas per layer and epithelium crypts ratio
+  areas_summary <- ai_output %>%
+    filter(classification %in% c("villi_epithelium", "villi_lamina_propria", "crypts_epithelium", "crypts_lamina_propria")) %>%
+    mutate(
+      area_px2 = st_area(geometry),
+      area_um2 = as.numeric(area_px2) * pixel_area_um2  # ensure numeric for pivoting
+    ) %>%
+    st_drop_geometry() %>%
+    select(image_name, fragment_name, mucosa_name, classification, area_um2) %>%
+    mutate(classification = paste0(classification, "_area_um2")) %>%
+    pivot_wider(
+      names_from = classification,
+      values_from = area_um2
+    ) %>%
+    mutate(
+      crypts_epithelium_area_1000_um2 = crypts_epithelium_area_um2 / 1000,
+      crypts_lamina_propria_area_1000_um2 = crypts_lamina_propria_area_um2 / 1000,
+      villi_epithelium_area_1000_um2 = villi_epithelium_area_um2 / 1000,
+      villi_lamina_propria_area_1000_um2 = villi_lamina_propria_area_um2 / 1000,
+      villi_epithelium_lamina_propria_ratio = villi_epithelium_area_um2 / villi_lamina_propria_area_um2,
+      crypts_epithelium_lamina_propria_ratio = crypts_epithelium_area_um2 / crypts_lamina_propria_area_um2
+    )
+
+  # Summarize lymphocyte size and distances 
+  lymphocytes_summary <- lymphocyte_distances %>%
+    select(classification, measured_area_um2, closest_junction_um, closest_neighbor_um, log_closest_junction_um, log_closest_neighbor_um) %>%
+    group_by(classification) %>%
+    summarise(
+      count = n(),
+      mean_log_closest_neighbor_um = mean(log_closest_neighbor_um, na.rm = TRUE),
+      sd_log_closest_neighbor_um = sd(log_closest_neighbor_um, na.rm = TRUE),
+      median_log_closest_neighbor_um = median(log_closest_neighbor_um, na.rm = TRUE),
+      iqr_log_closest_neighbor_um = IQR(log_closest_neighbor_um, na.rm = TRUE),
+      mean_measured_area_um2 = mean(measured_area_um2, na.rm = TRUE),
+      sd_measured_area_um2 = sd(measured_area_um2, na.rm = TRUE),
+      median_log_closest_junction_um = median(log_closest_junction_um, na.rm = TRUE),
+      iqr_log_closest_junction_um = IQR(log_closest_junction_um, na.rm = TRUE),
+      median_log_closest_neighbor_um = median(log_closest_neighbor_um, na.rm = TRUE),
+      iqr_log_closest_neighbor_um = IQR(log_closest_neighbor_um, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = classification,
+      values_from = c(
+        count,
+        mean_log_closest_neighbor_um, sd_log_closest_neighbor_um,
+        mean_measured_area_um2, sd_measured_area_um2,
+        median_log_closest_junction_um, iqr_log_closest_junction_um,
+        median_log_closest_neighbor_um, iqr_log_closest_neighbor_um
+      ),
+      names_glue = "{classification}_{.value}"
+    )
+
+  # Summarize lymphocyte clusters size and distances
+  lymphocyte_clusters_summary <- lymphocyte_cluster_distances %>%
+    select(classification, cluster_n_lymphocytes, closest_junction_um, closest_neighbor_um,
+           log_cluster_n_lymphocytes, log_closest_junction_um, log_closest_neighbor_um) %>%
+    group_by(classification) %>%
+    summarise(
+      count = n(),
+      median_cluster_n_lymphocytes = median(cluster_n_lymphocytes, na.rm = TRUE),
+      iqr_cluster_n_lymphocytes = IQR(cluster_n_lymphocytes, na.rm = TRUE),
+      median_log_cluster_n_lymphocytes = median(log_cluster_n_lymphocytes, na.rm = TRUE),
+      iqr_log_cluster_n_lymphocytes = IQR(log_cluster_n_lymphocytes, na.rm = TRUE),
+      median_closest_junction_um = median(closest_junction_um, na.rm = TRUE),
+      iqr_closest_junction_um = IQR(closest_junction_um, na.rm = TRUE),
+      median_log_closest_junction_um = median(log_closest_junction_um, na.rm = TRUE),
+      iqr_log_closest_junction_um = IQR(log_closest_junction_um, na.rm = TRUE),
+      median_closest_neighbor_um = median(closest_neighbor_um, na.rm = TRUE),
+      iqr_closest_neighbor_um = IQR(closest_neighbor_um, na.rm = TRUE),
+      median_log_closest_neighbor_um = median(log_closest_neighbor_um, na.rm = TRUE),
+      iqr_log_closest_neighbor_um = IQR(log_closest_neighbor_um, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = classification,
+      values_from = c(
+        count,
+        median_cluster_n_lymphocytes, iqr_cluster_n_lymphocytes,
+        median_log_cluster_n_lymphocytes, iqr_log_cluster_n_lymphocytes,
+        median_closest_junction_um, iqr_closest_junction_um,
+        median_log_closest_junction_um, iqr_log_closest_junction_um,
+        median_closest_neighbor_um, iqr_closest_neighbor_um,
+        median_log_closest_neighbor_um, iqr_log_closest_neighbor_um
+      ),
+      names_glue = "{classification}_{.value}"
+    )
+
+  # combine summarys and add area normalized counts
+  summary <- bind_cols(areas_summary, lymphocytes_summary, lymphocyte_clusters_summary) %>%
+    mutate(crypts_epithelium_lymphocyte_count_per_1000_um2 = crypts_epithelium_lymphocytes_count / crypts_epithelium_area_1000_um2,
+           crypts_lamina_propria_lymphocyte_count_per_1000_um2 = crypts_lamina_propria_lymphocytes_count / crypts_lamina_propria_area_1000_um2,
+           crypts_epithelium_lymphocytes_cluster_count_per_1000_um2 = crypts_epithelium_lymphocytes_cluster_count / crypts_epithelium_area_1000_um2,
+           crypts_lamina_propria_lymphocytes_cluster_count_per_1000_um2 = crypts_lamina_propria_lymphocytes_cluster_count / crypts_lamina_propria_area_1000_um2,
+           villi_epithelium_lymphocyte_count_per_1000_um2 = villi_epithelium_lymphocytes_count / villi_epithelium_area_1000_um2,
+           villi_lamina_propria_lymphocyte_count_per_1000_um2 = villi_lamina_propria_lymphocytes_count / villi_lamina_propria_area_1000_um2,
+           villi_epithelium_lymphocytes_cluster_count_per_1000_um2 = villi_epithelium_lymphocytes_cluster_count / villi_epithelium_area_1000_um2,
+           villi_lamina_propria_lymphocytes_cluster_count_per_1000_um2 = villi_lamina_propria_lymphocytes_cluster_count / villi_lamina_propria_area_1000_um2,
+           )
+
+  return(summary)
+}
+
+
+# Custom plotting function with median, quartile lines, and IQR printed
+plot_histogram_density <- function(data, distance_var, classification_var){
+  data %>%
+    group_by({{classification_var}}) %>%
+    mutate(
+      median_val = median(.data[[distance_var]], na.rm = TRUE),
+      q1 = quantile(.data[[distance_var]], 0.25, na.rm = TRUE),
+      q3 = quantile(.data[[distance_var]], 0.75, na.rm = TRUE),
+      iqr = q3 - q1
+    ) %>%
+    ggplot(aes(x = .data[[distance_var]])) +
+    geom_histogram(aes(y = ..density..), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+    geom_density(color = "blue", linewidth = 0.7) +
+    geom_vline(aes(xintercept = median_val), color = "red", linetype = "solid", linewidth = 0.8) +
+    geom_vline(aes(xintercept = q1), color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+    geom_vline(aes(xintercept = q3), color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+    facet_wrap(vars({{classification_var}}), scales = "free") +
+    labs(
+      title = paste("Distribution of", distance_var, " for image:", data$image_name, ", fragment:", data$fragment_name, ", mucosa:", data$mucosa_name ),
+      x = paste(distance_var, "(µm)"),
+      y = "Density"
+    ) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      strip.text = element_text(size = 9, face = "bold"),
+      plot.title = element_text(size = 10, face = "bold")
+    ) +
+    geom_text(
+      aes(x = Inf, y = Inf,
+          label = paste0("Median = ", round(median_val, 2), "\n",
+                         "IQR = ", round(iqr, 2))),
+      hjust = 1.1, vjust = 1.1,
+      size = 3, family = "Arial"
+    )
+}
+
+plot_histogram_density_mean <- function(data, distance_var, classification_var){
+  data %>%
+    group_by({{classification_var}}) %>%
+    mutate(
+      median_val = median(.data[[distance_var]], na.rm = TRUE),
+      q1 = quantile(.data[[distance_var]], 0.25, na.rm = TRUE),
+      q3 = quantile(.data[[distance_var]], 0.75, na.rm = TRUE),
+      iqr = q3 - q1,
+      mean_val = mean(.data[[distance_var]], na.rm = TRUE),
+      sd_val = sd(.data[[distance_var]], na.rm = TRUE),
+      upper_2sd = mean_val + 2 * sd_val,
+      lower_2sd = mean_val - 2 * sd_val
+    ) %>%
+    ggplot(aes(x = .data[[distance_var]])) +
+    geom_histogram(aes(y = ..density..), bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+    geom_density(color = "blue", linewidth = 0.7) +
+    
+    # Median and IQR
+    geom_vline(aes(xintercept = median_val), color = "orange", linetype = "solid", linewidth = 0.8) +
+    geom_vline(aes(xintercept = q1), color = "lightgreen", linetype = "dashed", linewidth = 0.7) +
+    geom_vline(aes(xintercept = q3), color = "lightgreen", linetype = "dashed", linewidth = 0.7) +
+
+    # Mean and ±2 SD
+    geom_vline(aes(xintercept = mean_val), color = "darkred", linetype = "solid", linewidth = 0.8) +
+    geom_vline(aes(xintercept = upper_2sd), color = "darkgreen", linetype = "dotted", linewidth = 0.7) +
+    geom_vline(aes(xintercept = lower_2sd), color = "darkgreen", linetype = "dotted", linewidth = 0.7) +
+
+    facet_wrap(vars({{classification_var}}), scales = "free") +
+    labs(
+      title = paste("Distribution of", distance_var, " for image:", data$image_name, ", fragment:", data$fragment_name, ", mucosa:", data$mucosa_name ),
+      x = paste(distance_var, "(µm)"),
+      y = "Density"
+    ) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      strip.text = element_text(size = 9, face = "bold"),
+      plot.title = element_text(size = 10, face = "bold")
+    ) +
+    geom_text(
+      aes(x = Inf, y = Inf,
+          label = paste0("Median = ", round(median_val, 2), "\n",
+                         "IQR = ", round(iqr, 2), "\n",
+                         "Mean = ", round(mean_val, 2), "\n",
+                         "±2SD = [", round(lower_2sd, 2), ", ", round(upper_2sd, 2), "]")),
+      hjust = 1.1, vjust = 1.1,
+      size = 3, family = "Arial"
+    )
+}
+
+```
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(sf)
+library(nngeo)
+  
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab//fe_si_images/output/process_subset/subset_labl_2020_tuning.json") %>% select(image_name, pixel_length_um, pixel_area_um2)
+  
+included_mucosa_list <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies//output/included_mucosa/included_mucosa_list.json") %>% 
+  left_join(subset)
+
+image_fragment_mucosa_names <- included_mucosa_list$name
+
+mapped_ai_output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/combos/output/mapped_ai_output/"
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/"
+
+
+lymphocyte_features_summaries <- NULL
+
+for (img_frag_muc in image_fragment_mucosa_names){
+  
+  message("Processing ", img_frag_muc)
+  
+  included_mucosa_info <- included_mucosa_list %>% filter(name == img_frag_muc)
+  pixel_length_um <- included_mucosa_info$pixel_length_um
+  pixel_area_um2 <- included_mucosa_info$pixel_area_um2
+  
+  ai_output_path  <- paste0(mapped_ai_output_dir, img_frag_muc, "_mapped_ai_output.geojson")
+  ai_output <- st_read(ai_output_path, quiet = TRUE) %>% st_set_crs(0) %>%
+    mutate(area_px2 = st_area(geometry),
+           area_um2 = area_px2 * pixel_area_um2)
+  
+  lymphocytes_path <- paste0(mapped_ai_output_dir, img_frag_muc, "_lymphocyte_centroids.geojson")
+  lymphocytes <- st_read(lymphocytes_path, quiet = TRUE) %>% st_set_crs(0)
+  
+  lymphocyte_distances <- calculate_lymphocyte_distances(ai_output, lymphocytes, pixel_length_um)
+  
+  write_json(lymphocyte_distances, paste0(output_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"), pretty = TRUE)
+  
+  lymphocyte_variables_to_plot <- c("measured_area_um2", "closest_junction_um",  "closest_neighbor_um", "log_closest_junction_um", "log_closest_neighbor_um")
+  
+  for (lc_var in lymphocyte_variables_to_plot){
+    plot <- plot_histogram_density_mean(
+      lymphocyte_distances,
+      lc_var,
+      classification
+      )
+    
+    ggsave(filename = paste0(output_dir,"plots/lymphocytes_",lc_var, "/", img_frag_muc, "_", lc_var, ".tiff"),
+           plot = plot,
+           width =7,
+           height = 3.5,
+           units = "in",
+           dpi = 300,
+           compression = "lzw")
+    }
+  
+  lymphocyte_clusters <- generate_lymphocyte_clusters(lymphocytes, pixel_length_um, dbscan_eps_um = 7, dbscan_minPts = 3, buffer_um = 4)
+  
+  lymphocyte_cluster_distances <- calculate_lymphocyte_distances(ai_output, lymphocyte_clusters, pixel_length_um)
+  
+  st_write(lymphocyte_clusters, paste0(output_dir, "lymphocyte_clusters/", img_frag_muc, "_lymphocyte_clusters.geojson"), quiet = TRUE, delete_dsn = TRUE)
+  
+  write_json(lymphocyte_cluster_distances, paste0(output_dir,"lymphocyte_clusters/", img_frag_muc, "_lymphocyte_cluster_distances.json"), pretty = TRUE)
+  
+  cluster_variables_to_plot <- c("cluster_n_lymphocytes", "closest_junction_um",  "closest_neighbor_um", "log_cluster_n_lymphocytes", "log_closest_junction_um", "log_closest_neighbor_um")
+  
+  for (clust_var in cluster_variables_to_plot){
+    plot <- plot_histogram_density_mean(
+      lymphocyte_cluster_distances,
+      clust_var,
+      classification
+      )
+    
+    ggsave(filename = paste0(output_dir,"plots/lymphocyte_clusters_", clust_var, "/", img_frag_muc, "_", clust_var, ".tiff"),
+           plot = plot,
+           width =7,
+           height = 3.5,
+           units = "in",
+           dpi = 300,
+           compression = "lzw")
+  }
+  
+  lymphocyte_features_summary <- summarize_lymphocyte_features(ai_output, lymphocyte_distances, lymphocyte_cluster_distances, pixel_area_um2)
+  
+  lymphocyte_features_summaries <- bind_rows(lymphocyte_features_summaries, lymphocyte_features_summary)
+  
+  
+}
+
+write_json(lymphocyte_features_summaries, paste0(output_dir, "feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments.json"), pretty = TRUE)
+  
+```
+### Explored distributions of the following in labl_2020_tuning
+-lc_measured_area_um2 - normally distributed (mean, sd)
+- lc_distance_to_closest_neighbor (left skewed - log transformation and median iqr)
+- lc_distance to closest_junction (left skewed - log transformation makes it right skewed) log transformation and median iqr captures the center well
+- cl_n_lc_left_skewed, log transf still left skewed but captures center better (median and iqr)
+-cl_closest_neighbor - left_skewed - log transformatio nand median iqr captures it well
+- cl_closest_junction - irregular - non log transformed captures the dist sligjlty better - 
+kept them all in summary for now
+
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(sf)
+library(nngeo)
+  
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab//fe_si_images/output/process_subset/subset_labl_2020_tuning.json") %>% select(image_name, pixel_length_um, pixel_area_um2)
+  
+included_mucosa_list <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies//output/included_mucosa/included_mucosa_list.json") %>% 
+  left_join(subset)
+
+image_fragment_mucosa_names <- included_mucosa_list$name
+
+mapped_ai_output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/combos/output/mapped_ai_output/"
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/"
+
+
+lymphocyte_features_summaries <- NULL
+
+for (img_frag_muc in image_fragment_mucosa_names){
+  
+  message("Processing ", img_frag_muc)
+  
+  included_mucosa_info <- included_mucosa_list %>% filter(name == img_frag_muc)
+  pixel_length_um <- included_mucosa_info$pixel_length_um
+  pixel_area_um2 <- included_mucosa_info$pixel_area_um2
+  
+  ai_output_path  <- paste0(mapped_ai_output_dir, img_frag_muc, "_mapped_ai_output.geojson")
+  ai_output <- st_read(ai_output_path, quiet = TRUE) %>% st_set_crs(0) %>%
+    mutate(area_px2 = st_area(geometry),
+           area_um2 = area_px2 * pixel_area_um2)
+  
+  #lymphocytes_path <- paste0(mapped_ai_output_dir, img_frag_muc, "_lymphocyte_centroids.geojson")
+  #lymphocytes <- st_read(lymphocytes_path, quiet = TRUE) %>% st_set_crs(0)
+  
+  #lymphocyte_distances <- calculate_lymphocyte_distances(ai_output, lymphocytes, pixel_length_um)
+  
+  #write_json(lymphocyte_distances, paste0(output_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"), pretty = TRUE)
+  
+  lymphocyte_distances <- fromJSON(paste0(output_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"))
+  
+  #lymphocyte_variables_to_plot <- c("measured_area_um2", "closest_junction_um",  "closest_neighbor_um", "log_closest_junction_um", "log_closest_neighbor_um")
+  
+  
+  #lymphocyte_clusters <- generate_lymphocyte_clusters(lymphocytes, pixel_length_um, dbscan_eps_um = 7, dbscan_minPts = 3, buffer_um = 4)
+  
+  #lymphocyte_cluster_distances <- calculate_lymphocyte_distances(ai_output, lymphocyte_clusters, pixel_length_um)
+  
+ #st_write(lymphocyte_clusters, paste0(output_dir, "lymphocyte_clusters/", img_frag_muc, "_lymphocyte_clusters.geojson"), quiet = TRUE, delete_dsn = TRUE)
+  
+  #write_json(lymphocyte_cluster_distances, paste0(output_dir,"lymphocyte_clusters/", img_frag_muc, "_lymphocyte_cluster_distances.json"), pretty = TRUE)
+  
+  lymphocyte_cluster_distances <- fromJSON(paste0(output_dir,"lymphocyte_clusters/", img_frag_muc, "_lymphocyte_cluster_distances.json"))
+  
+
+  lymphocyte_features_summary <- summarize_lymphocyte_features(ai_output, lymphocyte_distances, lymphocyte_cluster_distances, pixel_area_um2)
+  
+  lymphocyte_features_summaries <- bind_rows(lymphocyte_features_summaries, lymphocyte_features_summary)
+  
+  
+}
+
+write_json(lymphocyte_features_summaries, paste0(output_dir, "feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments_new.json"), pretty = TRUE)
+  
+  
+
+  
+  
+  
+  
+  
+  
+
+```

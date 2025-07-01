@@ -1,0 +1,102 @@
+---
+title: "batches_for_process"
+author: "Wulcan"
+date: "2025-06-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+The objective of this script is to split the sample for the project into batches for easier processing
+
+## Samples 
+All scanned fe_si_biopsies are eligble for inclusion (labl and pmi, regardless of scanner, even cases used for ai development)
+Avoid duplicates imaged. 
+Only include H&E
+
+## Batches - status (update consecutively)
+The status will be tracked here: https://docs.google.com/spreadsheets/d/1EfFLsC8cyiQJYOmJotHQGPW0cQf2cDjd2f5WHxZJhb8/edit?usp=sharing
+
+```{r}
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/"
+#Use image_index with duplicate slides removed
+image_index_deduplicated <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json")
+
+#Only used H&E stained images
+image_index_he <- image_index_deduplicated %>%
+  filter(staining == "he") 
+
+#Separate batches into already uploaded to aiforia and not
+
+image_metadata <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/general_subscription_info/image_metadata.json")
+
+images_fragments_reviewed <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragments/output/process_reviewed_fragments/images_fragments_reviewed.json")
+
+
+uploaded_to_aiforia <- image_index_he %>% filter(image_name %in% image_metadata$image_name)
+
+not_uploaded_to_aiforia <- image_index_he %>% filter(!(image_name %in% image_metadata$image_name)) %>% 
+  arrange(desc(vmacs_bx_year))
+
+#Batch 0 is the grading sample - prioritized for processing
+uploaded_to_aiforia_fragments_reviewed <- uploaded_to_aiforia %>% filter(image_name %in% images_fragments_reviewed)
+
+batch_0 <- uploaded_to_aiforia_fragments_reviewed 
+
+#Batch 1-3 are not uploaded to aiforia yet
+
+slides_per_batch <- 225
+
+batched <- not_uploaded_to_aiforia %>% 
+  mutate(batch_idx   = ceiling(row_number() / slides_per_batch),
+         batch_name = paste0("batch_", batch_idx))
+
+batches <- batched %>% 
+  group_split(batch_idx, .keep = TRUE) %>%               
+  setNames(paste0("batch_", seq_len(length(.))))
+
+batch_1 <- batches$batch_1
+batch_2 <- batches$batch_2
+batch_3 <- batches$batch_3
+
+
+### Batch 4-6 are uploaded to aiforia, but the fragments havent been screeened (will be mixed if they are processed or not)
+
+
+uploaded_to_aiforia_fragments_not_reviewed <- uploaded_to_aiforia %>% filter(!(image_name %in% images_fragments_reviewed))
+
+slides_per_batch <- 236
+
+offset <- 3
+
+uploaded_to_aiforia_fragments_not_reviewed <- 
+  uploaded_to_aiforia_fragments_not_reviewed %>% 
+   arrange(
+    desc(vmacs_bx_year),             # newest year → oldest
+    desc(labl_date)                  # then newest labl_date → oldest
+  )
+
+next_batched <- uploaded_to_aiforia_fragments_not_reviewed %>% 
+  mutate(batch_idx  = ceiling(row_number() / slides_per_batch) + offset,
+         batch_name = paste0("batch_", batch_idx))
+
+new_batches <- next_batched %>% 
+  group_split(batch_idx, .keep = TRUE) %>% 
+  setNames(unique(next_batched$batch_name))
+
+batch_4 <- new_batches$batch_4
+batch_5 <- new_batches$batch_5
+batch_6 <- new_batches$batch_6
+
+write_json(batch_0, paste0(output_dir, "batch_0.json"), pretty = TRUE)
+write_json(batch_1, paste0(output_dir, "batch_1.json"), pretty = TRUE)
+write_json(batch_2, paste0(output_dir, "batch_2.json"), pretty = TRUE)
+write_json(batch_3, paste0(output_dir, "batch_3.json"), pretty = TRUE)
+write_json(batch_4, paste0(output_dir, "batch_4.json"), pretty = TRUE)
+write_json(batch_5, paste0(output_dir, "batch_5.json"), pretty = TRUE)
+write_json(batch_6, paste0(output_dir, "batch_6.json"), pretty = TRUE)
+```
