@@ -100,3 +100,44 @@ write_json(batch_4, paste0(output_dir, "batch_4.json"), pretty = TRUE)
 write_json(batch_5, paste0(output_dir, "batch_5.json"), pretty = TRUE)
 write_json(batch_6, paste0(output_dir, "batch_6.json"), pretty = TRUE)
 ```
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/"
+
+image_metadata <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/general_subscription_info/image_metadata.json")
+
+batch_0 <- fromJSON(paste0(output_dir, "batch_0.json")) %>%
+  mutate(processing_batch = "batch_0") %>%
+  select(image_name, image_format, processing_batch)
+batch_1 <- fromJSON(paste0(output_dir, "batch_1.json")) %>%
+  mutate(processing_batch = "batch_1") %>%
+  select(image_name, image_format, processing_batch)
+batch_2 <- fromJSON(paste0(output_dir, "batch_2.json")) %>%
+  mutate(processing_batch = "batch_2") %>%
+  select(image_name, image_format, processing_batch)
+batch_3 <- fromJSON(paste0(output_dir, "batch_3.json")) %>%
+  mutate(processing_batch = "batch_3") %>%
+  select(image_name, image_format,  processing_batch)
+batch_4 <- fromJSON(paste0(output_dir, "batch_4.json"))  %>%
+  mutate(processing_batch = "batch_4") %>%
+  select(image_name, image_format, processing_batch)
+batch_5 <- fromJSON(paste0(output_dir, "batch_5.json"))  %>%
+  mutate(processing_batch = "batch_5") %>%
+  select(image_name, image_format, processing_batch)
+batch_6 <- fromJSON(paste0(output_dir, "batch_6.json")) %>%
+  mutate(processing_batch = "batch_6") %>%
+  select(image_name, image_format, processing_batch)
+
+all_batches <- bind_rows(batch_0, batch_1, batch_2, batch_3, batch_4, batch_5, batch_6)
+
+#Move not uploaded images to hard drive for upload
+batch_1_not_uploaded <- all_batches %>% 
+  filter(processing_batch == "batch_1" & !(image_name %in% image_metadata$image_name)) %>%
+  mutate(file_name = paste(image_name, image_format, sep="."))
+
+file_names <- batch_1_not_uploaded$file_name 
+
+```
