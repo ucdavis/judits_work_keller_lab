@@ -1,0 +1,322 @@
+---
+title: "flow_of_cases"
+author: "Wulcan"
+date: "2025-06-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+The objective of this script is to process images for inclusion to the project "lymphocyte_distribution..."
+
+Inclusion criteria:
+- Hematoxylin & eosin stained feline small intestinal biopsy 
+submitted to:
+  - UC Davis pathology service 1999-01-01 to 2024-12-31 
+  - Peter Moore's leukocyte antigen bioology laboratory (2010-01-01 to 2020-12-31)
+
+The objective of this script is to split the sample for the project into batches for easier processing
+
+## Samples 
+All scanned fe_si_biopsies are eligble for inclusion (labl and pmi, regardless of scanner, even cases used for ai development)
+Avoid duplicates imaged. 
+Only include H&E
+
+## Batches - status (update consecutively)
+The status will be tracked here: https://docs.google.com/spreadsheets/d/1EfFLsC8cyiQJYOmJotHQGPW0cQf2cDjd2f5WHxZJhb8/edit?usp=sharing
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+
+
+```
+
+## Summary for paper - case flow chart
+
+### VMACS cases (1999-01-01 to 2024-12-31)
+The inclusion criteria are addressed at the *automated record screening* level (feline, small biopsy, small intestine), and
+at the *manual glass and record review* screening level (feline, biopsy, small intestine, H&E) and at the *manual fragment review level* (small intestine)
+
+#### Inclusion criteria
+- **Feline**
+- **Biopsy**
+- **Small intestine**
+- **H&E**
+
+#### Exclusion criteria
+The exclusion criteria are addressed at the *manual glass review* level (quality, lesion and malt) and again, during processing at the *manual fragment review *level (lesion and malt) and the *automated mucosal segment quality classification* level (quality). 
+
+- **Missing** Missing slide (recuts not sought)
+- **Quality** No fragments on slide with adequate or marginal quality (for orientation and artefact)
+- **Lesion** No fragments on slide with recognizable small intestinal mucosa - exclude
+slides where the mucosa of all fragments are wrecked by e.g. necrosis, ulceration etc.
+- **Malt** No fragments on slide without mucosa-associated lymphoid tissue. - currently no
+pipeline step to address.
+
+
+#### Record identification - VMACS search
+Identify all feline biopsies 1999-01-01 to 2024-12-31 through VMACS
+ - All vmacs pathology records for cats during the time was downloaded in html format
+ - Parsed with custom R script to tidy format (svm_archives/vmth/parse_path)
+ Full procedure outlined in svm_archives/vmth/ README
+ - Filtered for biopsies based on letter in bx_id ("B")
+ 
+##### Issues/Deviations/Comments
+- Records from 1983 available. Limit to 1999 because of extensive use of plastic coverslips 
+prior to 1999 resulting in degraded slide quality.
+
+```{r}
+to_box <- "~/Library/CloudStorage/Box-Box/"
+output_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_samples/pmi_2024_spatial/output/pmi_2024_spatial_sampling/")
+
+#Identified fe bx 1999-2024 (vmacs search)
+bx <- fromJSON(paste0(output_dir, "fe_vmth_bx_1985-2024.json")) %>%
+  filter(bx_year > 1998) #5678 feline bx 1999-2024 
+
+message(paste0("Identified bx n = ", nrow(bx)))
+message(paste0("Unique patients n = ", length(unique(bx$patient_id))))
+
+```
+
+
+#### Step 2 Filter for small intestine
+Records mentioning small intestine (duodenum/jejunum/ileum/small intestine) identified 
+with regex using full report (not just dx)
+- Identified small intestinal biopsies with regex pattern (fe_si_sample/pmi_2024_spatial/)
+Regex pattern validated using jmws parsing of random sample as reference standard. 
+*Sensitivity 100%, Specificity 98%, PPV 93.5%, NPV 100%, F1 score 96.7%*
+
+```{r}
+to_box <- "~/Library/CloudStorage/Box-Box/"
+output_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_samples/pmi_2024_spatial/output/pmi_2024_spatial_sampling/")
+
+#Identified fe si bx (+reg ex)
+si_bx <- fromJSON(paste0(output_dir, "fe_vmth_si_bx_1985-2024.json")) %>%
+  filter(bx_year > 1998) #947 (remove 4731 after regex)
+
+message(paste0("Identified si bx n = ", nrow(si_bx)))
+message(paste0("Unique patients n = ", length(unique(si_bx$patient_id))))
+```
+
+#### Step 3 Seek biopsies from archive
+Front office personnel pulled biopsies from archived. "Missing" if either no slides were identified in the archives (by front office personel), or none of the identified slides fit the inclusion criteria (biopsy, H&E, small intestine) in manual glass and record review 
+by JMW
+
+#### Issues/Deviations
+- Some "missing" biopsies were entered into the inclusion /exclusion sheet. These are
+corrected here.
+
+- Some "missing" biopsies were later recovered as earlier scans and included
+These cases are corrected from "missing" in the manual review. 
+
+```{r}
+#Function for parsing exclusion reasons
+split_tokens <- function(x) str_split(x, "_", simplify = TRUE)
+
+#For adding patient id to exclusion data
+si_bx <- fromJSON(paste0(output_dir, "fe_vmth_si_bx_1985-2024.json")) %>%
+  filter(bx_year > 1998) 
+
+pmi_2024_spatial_inclusions_and_exclusions <- fromJSON(paste0(output_dir, "pmi_2024_spatial_inclusions_and_exclusions.json")) %>%
+  filter(bx_year > 1998) %>%
+  left_join(
+    si_bx %>% 
+      distinct(bx_id, patient_id),   
+    by = "bx_id"
+  )
+
+all_scanned_images <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(in_vmacs & vmacs_bx_year > 1998)
+
+
+
+## correct missing status and parse exclusion reasons into simpler categories
+corrected_missing_status <-  pmi_2024_spatial_inclusions_and_exclusions %>%
+  mutate(included = ifelse(is.na(included), FALSE, included)) %>%
+  mutate(exclusion_reason = ifelse(!included & is.na(exclusion_reason), "missing", exclusion_reason)) %>%
+  mutate(included  = ifelse(bx_id %in% all_scanned_images$bx_id, TRUE, included),
+         exclusion_reason = ifelse(bx_id %in% all_scanned_images$bx_id, NA, exclusion_reason)) %>%
+  mutate(
+    exclusion_simplified = case_when(
+      str_detect(exclusion_reason, "malt") ~ "malt", #highest prio if multiple
+      str_detect(exclusion_reason, regex("(lesion|necros|polyp|pyogranulomatous)", ignore_case = TRUE)) ~ "lesion", #second prio if multiple
+      str_detect(exclusion_reason, regex("(quality|faded|orient|crush|artefact|stain)", ignore_case = TRUE)) ~ "quality", #third prio if multiple
+      str_detect(exclusion_reason, "missing") ~ "missing", #forth prio is multiple
+      str_detect(exclusion_reason, "failed_scan") ~ "failed_scan",
+      str_detect(exclusion_reason, "no_si") ~ "no_si",
+      str_detect(exclusion_reason, "fetus|necropsy") ~ "not_bx",
+      TRUE ~ NA
+    )) 
+
+missing <- corrected_missing_status %>% filter(exclusion_simplified == "missing")
+
+message(paste0("Cases missing n = ", nrow(missing)))
+
+not_missing <- corrected_missing_status %>% filter(included | exclusion_simplified != "missing")
+
+message(paste0("Cases manually reviewed n = ", nrow(not_missing)))
+message(paste0("Unique patients not missing n = ", length(unique(not_missing$patient_id))))
+
+write_json(not_missing, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/not_missing.json", pretty = TRUE)
+```
+
+#### Step 4 Manual review of slides and records 
+JMW reviewed all available slides +/- associated records for identified cases with
+available slides, and 1) confirmed inclusion criteria 2) included/excluded slides based on exclusion criteria. Included slides were submitted for scanning (if not already scanned)
+
+#### Issues/Deviations
+- Some "missing" biopsies were entered into the inclusion /exclusion sheet. These are
+corrected here.
+
+- Some "missing" biopsies were later recovered as earlier scans and included
+These cases are corrected from "missing" in the manual review. 
+```{r}
+not_missing <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/not_missing.json")
+
+exclusions <- not_missing %>% 
+  filter(!included) %>% 
+  filter(exclusion_simplified != "failed_scan")
+  
+
+message(paste0("Excluded at manual review n = ", nrow(exclusions)))
+
+not_biopsy <- exclusions %>% filter(exclusion_simplified == "not_bx")
+message(paste0("Not biopsy n = ", nrow(not_biopsy)))
+
+no_si <- exclusions %>% filter(exclusion_simplified == "no_si")
+message(paste0("No small intestine n = ", nrow(no_si)))
+
+quality <- exclusions %>% filter(exclusion_simplified == "quality")
+message(paste0("Poor quality n = ", nrow(quality)))
+
+lesion <- exclusions %>% filter(exclusion_simplified == "lesion")
+message(paste0("Mucosa destroying lesion n = ", nrow(lesion)))
+
+malt <- exclusions %>% filter(exclusion_simplified == "malt")
+message(paste0("Malt n = ", nrow(lesion)))
+
+cases_for_scanning <- not_missing %>% 
+  filter(included | exclusion_simplified == "failed_scan")
+
+failed_scans <- not_missing %>% 
+  filter(exclusion_simplified == "failed_scan")
+
+write_json(failed_scans, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/failed_scans.json", pretty = TRUE)
+
+slides_for_scanning <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(in_vmacs & vmacs_bx_year > 1998) %>%
+  filter(staining == "he")
+
+write_json(slides_for_scanning, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/vmacs_slides_scanned.json", pretty = TRUE)
+
+message(paste0("Cases for scanning n = ", nrow(cases_for_scanning)))
+message(paste0("Unique patients for scanning n = ", length(unique(for_scanning$patient_id))))
+message(paste0("Slides for scanning n = ", (nrow(slides_for_scanning)) + nrow(failed_scans)))
+```
+
+#### Step 5 Scanning 
+Included slides were either sent for scanning, or if already scanned - the scanned
+WSIs retreived. 
+
+```{r}
+failed_scans <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/failed_scans.json")
+
+message(paste0("Failed scans = ", nrow(failed_scans)))
+
+scanned <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(in_vmacs & vmacs_bx_year > 1998) %>%
+  filter(staining == "he")
+
+message(paste0("Scanned cases n = ", length(unique(scanned$bx_id))))
+message(paste0("Unique scanned patients n = ", length(unique(scanned$vmacs_patient_id))))
+message(paste0("Scanned slides n = ", nrow(scanned)))
+```
+#### Outside cases
+Cases from the LABL archive, submitted from outside laboatories (10 different) for clonality testing between 2010-01-01 and 2020-12-31. These were either sampled and scanned for a previous study (https://doi.org/10.1177/03009858241286828), or part of a set of five demo slide to try aiforia previous to that study.
+
+
+##### Issues / Deviations / Comments
+- The previous study had the same inclusion criteria as this study but no exclusion criteria.
+- No additional screening prior to the WSI stage was done for this study.
+But follows the same procedures for inclusion/exclusion from the fragment review layer. 
+- Cases both identified in the VMACS case inclusion sequence and in the LABL archive are
+counted towards the vmacs pipeline (even if used in the previous labl study)
+- A few cases were retreived, screened and scanned for the LABL study but not needed for that study (numbers will not perfectly match previous paper)
+- We don't have patient id for any of these.
+- If more than one slide per biopsy submission - one was sampled (done for previous paper)
+- Only H&E were scanned for this
+
+```{r}
+outside_cases <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(!in_vmacs) %>%
+  filter(staining == "he")
+
+message(paste0("Outside WSIs  n = ", nrow(outside_cases)))
+message(paste0("Outside cases n = ", length(unique(outside_cases$bx_id))))
+```
+
+#### All WSIs
+Scanned VMACS cases and scanned outside cases (LABL external submissions)
+
+```{r}
+all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(staining == "he") %>%
+  filter(!in_vmacs | vmacs_bx_year > 1998)
+
+message(paste0("All WSIs (local and outside cases)  n = ", nrow(all_wsis)))
+message(paste0("All cases n = ", length(unique(all_wsis$bx_id))))
+
+write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json", pretty = TRUE)
+```
+
+
+#### WSI batches for processing
+The WSIs were split into batches for processing (batch 0 to batch 6).
+Batch 0 is the sample pulled for grading (validation), otherwise the split is arbitrary 
+(based on which images were already uploaded to aiforia on time of scanning)
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/"
+
+image_metadata <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/general_subscription_info/image_metadata.json")
+
+batch_0 <- fromJSON(paste0(output_dir, "batch_0.json")) %>%
+  mutate(processing_batch = "batch_0") %>%
+  select(image_name, image_format, processing_batch)
+batch_1 <- fromJSON(paste0(output_dir, "batch_1.json")) %>%
+  mutate(processing_batch = "batch_1") %>%
+  select(image_name, image_format, processing_batch)
+batch_2 <- fromJSON(paste0(output_dir, "batch_2.json")) %>%
+  mutate(processing_batch = "batch_2") %>%
+  select(image_name, image_format, processing_batch)
+batch_3 <- fromJSON(paste0(output_dir, "batch_3.json")) %>%
+  mutate(processing_batch = "batch_3") %>%
+  select(image_name, image_format,  processing_batch)
+batch_4 <- fromJSON(paste0(output_dir, "batch_4.json"))  %>%
+  mutate(processing_batch = "batch_4") %>%
+  select(image_name, image_format, processing_batch)
+batch_5 <- fromJSON(paste0(output_dir, "batch_5.json"))  %>%
+  mutate(processing_batch = "batch_5") %>%
+  select(image_name, image_format, processing_batch)
+batch_6 <- fromJSON(paste0(output_dir, "batch_6.json")) %>%
+  mutate(processing_batch = "batch_6") %>%
+  select(image_name, image_format, processing_batch)
+
+all_batches <- bind_rows(batch_0, batch_1, batch_2, batch_3, batch_4, batch_5, batch_6)
+
+all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json") %>%
+  left_join(all_batches)
+
+write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json", pretty = TRUE)
+```
+
+
+
+
