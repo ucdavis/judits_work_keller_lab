@@ -48,7 +48,7 @@ at the *manual glass and record review* screening level (feline, biopsy, small i
 - **H&E**
 
 #### Exclusion criteria
-The exclusion criteria are addressed at the *manual glass review* level (quality, lesion and malt) and again, during processing at the *manual fragment review *level (lesion and malt) and the *automated mucosal segment quality classification* level (quality). 
+The exclusion criteria are addressed at the *manual glass review* level (quality, lesion and malt) and again, during processing at the automated fragment review level (duplicates) *manual fragment review *level (lesion and malt) and the *automated mucosal segment quality classification* level (quality). 
 
 - **Missing** Missing slide (recuts not sought)
 - **Quality** No fragments on slide with adequate or marginal quality (for orientation and artefact)
