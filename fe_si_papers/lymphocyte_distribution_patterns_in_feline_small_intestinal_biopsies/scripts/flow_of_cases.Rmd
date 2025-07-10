@@ -283,9 +283,9 @@ Batch 0 is the sample pulled for grading (validation), otherwise the split is ar
 library(jsonlite)
 library(tidyverse)
 
-output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/"
+output_dir <- "C:/Users/15303/Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/flow_of_cases//"
 
-image_metadata <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/general_subscription_info/image_metadata.json")
+image_metadata <- fromJSON("C:/Users/15303/Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/general_subscription_info/image_metadata.json")
 
 batch_0 <- fromJSON(paste0(output_dir, "batch_0.json")) %>%
   mutate(processing_batch = "batch_0") %>%
@@ -311,13 +311,15 @@ batch_6 <- fromJSON(paste0(output_dir, "batch_6.json")) %>%
 
 all_batches <- bind_rows(batch_0, batch_1, batch_2, batch_3, batch_4, batch_5, batch_6)
 
-all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json") %>%
-  left_join(all_batches)
+#all_wsis <- fromJSON("C:/Users/15303/Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json") %>%
+#  left_join(all_batches)
 
-write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json", pretty = TRUE)
+#write_json(all_wsis, "C:/Users/15303/Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/batches_for_process/all_wsis.json", pretty = TRUE)
 ```
 
 
-
+```{r}
+all_batches <- fromJSON("C:/Users/15303/Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/flow_of_cases//all_wsis.json")
+```
 
 
