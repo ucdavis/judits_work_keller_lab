@@ -10,8 +10,9 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Objective
-The objective of this is to explore a range of candidate lymphocyte features 
+The objective of this is to do a univariate "scan" - explore a range of candidate lymphocyte features 
 to select for project inclusion
+
 
 
 - **lymphocyte cellularity**
@@ -37,29 +38,311 @@ to select for project inclusion
 - **heterogeneity**
   -*sd_measured_area_um2 *
 
-   
-
-
 ```{r}
 library(jsonlite)
 library(tidyverse)
 
+#to_box <- "~/Library/CloudStorage/Box-Box/"
+to_box <- "C:/Users/15303/Box/" #JMW lenovo
+
+library(dplyr)
+library(ggplot2)
+library(scales)   # pretty_breaks()
+
+plot_hist_density_stats <- function(.data,
+                                    value_var,
+                                    n_breaks = 12,          # how many x-axis ticks
+                                    title_prefix = "Distribution of") {
+
+  # compute global summary stats
+  stats <- summarise(.data,
+                     median_val = median(.data[[ value_var ]], na.rm = TRUE),
+                     q1        = quantile(.data[[ value_var ]], 0.25, na.rm = TRUE),
+                     q3        = quantile(.data[[ value_var ]], 0.75, na.rm = TRUE),
+                     mean_val  = mean(.data[[ value_var ]], na.rm = TRUE),
+                     sd_val    = sd  (.data[[ value_var ]], na.rm = TRUE)) |>
+           mutate(iqr       = q3 - q1,
+                  upper_2sd = mean_val + 2 * sd_val,
+                  lower_2sd = mean_val - 2 * sd_val)
+
+  ggplot(.data, aes(x = .data[[ value_var ]])) +
+    geom_histogram(aes(y = ..density..), bins = 30,
+                   fill = "grey80", colour = "black", alpha = 0.6) +
+    geom_density(colour = "blue", linewidth = 0.7) +
+
+    # reference lines
+    geom_vline(data = stats, aes(xintercept = median_val),  colour = "orange") +
+    geom_vline(data = stats, aes(xintercept = q1),  colour = "lightgreen", linetype = "dashed") +
+    geom_vline(data = stats, aes(xintercept = q3),  colour = "lightgreen", linetype = "dashed") +
+    geom_vline(data = stats, aes(xintercept = mean_val),  colour = "darkred") +
+    geom_vline(data = stats, aes(xintercept = upper_2sd), colour = "darkgreen", linetype = "dotted") +
+    geom_vline(data = stats, aes(xintercept = lower_2sd), colour = "darkgreen", linetype = "dotted") +
+
+    # nicer x-axis tick density
+    scale_x_continuous(breaks = pretty_breaks(n = n_breaks)) +
+
+    labs(title = paste(title_prefix, value_var),
+         x = value_var,
+         y = "Density") +
+    theme_bw(base_size = 9) +
+    theme(plot.title = element_text(size = 10, face = "bold")) +
+
+    # summary text in the corner
+    geom_text(data = stats,
+              aes(x = Inf, y = Inf,
+                  label = paste0("Median = ", round(median_val, 2), "\n",
+                                 "IQR = ",   round(iqr, 2), "\n",
+                                 "Mean = ",  round(mean_val, 2), "\n",
+                                 "±2SD = [", round(lower_2sd, 2),
+                                 ", ",       round(upper_2sd, 2), "]")),
+              hjust = 1.1, vjust = 1.1, size = 3)
+}
 
 
-lymphocyte_features <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments.json")
 
-lymphocyte_features_image_names <- lymphocyte_features$image_name
 
-subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_labl_2020_tuning.json") %>% 
-  filter(image_name %in% lymphocyte_features_image_names) 
 
-file_paths <- subset$file_path
 
-writeLines(file_paths, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/file_paths.txt")
 ```
 
 
 
+### Explore 
+
+**Intraepithelial lymphocyte cellularity"  - villi
+
+#### Candidate features
+- **villi_epithelium_lymphocyte_count_per_1000_um2**
+Similar to our previous paper but by mucosal segment and layer.
+```{r}
+
+lymphocyte_features <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_batch_1.json"))
+
+distance_var      <- "villi_epithelium_lymphocyte_count_per_1000_um2"
+log_distance_var  <- "log_villi_epi_lymphs_per_1000_um2"
+
+# 1.  Add a small constant, then create the log-transformed column
+#    – handles zero counts cleanly and keeps the scale interpretable.
+lymphocyte_features <- lymphocyte_features %>% 
+  mutate(
+    !!log_distance_var := log10(.data[[distance_var]] + 1)   # “+1” is an easy, defensible offset
+  )
+
+villi_epi_lymphs_per_1000_um2 <- lymphocyte_features %>%
+  select(image_name:mucosa_name, villi_epithelium_lymphocyte_count_per_1000_um2, log_villi_epi_lymphs_per_1000_um2)
+
+p_raw <- plot_hist_density_stats(
+  villi_epi_lymphs_per_1000_um2,
+  value_var = "villi_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Lymphocyte counts per 1000 µm² for villi epithelium",
+    x     = "Lymphocyte counts per 1000 µm²"
+  )
+
+# Log-transformed counts
+p_log <- plot_hist_density_stats(
+  villi_epi_lymphs_per_1000_um2,
+  value_var = "log_villi_epi_lymphs_per_1000_um2",
+  n_breaks  = 14
+) +
+  labs(
+    title = "Lymphocyte counts per 1000 µm² for villi epithelium – log transformed",
+    x     = "Log₁₀ (lymphocytes per 1000 µm²)"   # adjust wording if needed
+  )
+
+p_raw
+
+ggsave(
+  filename = "villi_epi_counts.png",   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300       # 300 is print-quality; 96–150 is fine for slides
+)
+p_log
+
+```
+
+
+```{r}
+library(ggplot2)
+library(scales)        # for log_breaks() / log_minor_breaks()
+
+minor_breaks_log10 <- function() {
+  function(lims) {                    # lims = c(min, max) in raw units
+    rng  <- range(log10(lims))
+    decs <- floor(rng[1]):ceiling(rng[2])
+    as.numeric(outer(1:9, 10^decs, `*`))   # 1–9 × 10^each decade
+  }
+}
+
+scale_x_log10(
+  breaks       = scales::log_breaks(base = 10),
+  minor_breaks = minor_breaks_log10(),
+  labels       = scales::label_comma()
+)
+
+
+offset      <- 1                     # same offset as in aes()
+distance_var   <- "villi_epithelium_lymphocyte_count_per_1000_um2"
+
+# ----- summary stats on the raw (+offset) scale -----
+x_raw <- lymphocyte_features[[distance_var]] + offset
+median_raw <- median(x_raw, na.rm = TRUE)
+q1_raw     <- quantile(x_raw, 0.25, na.rm = TRUE)
+q3_raw     <- quantile(x_raw, 0.75, na.rm = TRUE)
+
+# ----- plot -----
+ggplot(lymphocyte_features, aes(x = x_raw)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 fill = "grey80", colour = "black", alpha = 0.6) +
+  geom_density(colour = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_raw, colour = "red") +
+  geom_vline(xintercept = q1_raw,     colour = "darkgreen", linetype = "dashed") +
+  geom_vline(xintercept = q3_raw,     colour = "darkgreen", linetype = "dashed") +
+
+  # ---------- denser log axis ----------
+  scale_x_log10(
+  breaks       = scales::log_breaks(base = 10),
+  minor_breaks = minor_breaks_log10(),
+  labels       = scales::label_comma()
+) +
+
+  # optional: faint vertical minor grid lines for easier reading
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(
+    panel.grid.minor.x = element_line(linewidth = 0.3, colour = "grey85"),
+    axis.text.x        = element_text(angle = 45, hjust = 1)
+  ) +
+
+  labs(
+    x     = paste(distance_var, "(per 1000 µm²)"), 
+    y     = "Density",
+    title = paste("Distribution of", distance_var, "on log-10 scale")
+  )
+```
+
+# 2.  Recalculate summary statistics on the transformed values
+median_val <- median(lymphocyte_features[[log_distance_var]], na.rm = TRUE)
+q1         <- quantile(lymphocyte_features[[log_distance_var]], 0.25, na.rm = TRUE)
+q3         <- quantile(lymphocyte_features[[log_distance_var]], 0.75, na.rm = TRUE)
+iqr        <- q3 - q1
+
+# 3.  Plot the transformed distribution
+ggplot(lymphocyte_features, aes(x = .data[[log_distance_var]])) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey80", color = "black", alpha = 0.6) +
+  geom_density(color = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val, color = "red",   linetype = "solid",  linewidth = 0.8) +
+  geom_vline(xintercept = q1,         color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  geom_vline(xintercept = q3,         color = "darkgreen", linetype = "dashed", linewidth = 0.7) +
+  labs(
+    title = paste("Log-transformed distribution of", distance_var),
+    x     = paste0("log10(", distance_var, " + 1)"),
+    y     = "Density"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Median = ", round(median_val, 2),
+                   "\nIQR = ",   round(iqr, 2)),
+    hjust = 1.1, vjust = 1.1,
+    size = 3, family = "Arial"
+  )
+
+library(ggplot2)
+library(scales)   # for nicer labels
+
+offset <- 1                      # whatever constant you chose
+
+ggplot(lymphocyte_features,
+       aes(x = .data[[distance_var]] + offset)) +   # raw values
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey80", colour = "black", alpha = 0.6) +
+  geom_density(colour = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_val + offset, colour = "red") +
+  scale_x_log10(labels = label_comma()) +           # <- log axis, human labels
+  labs(x = paste(distance_var, "(per 1000 µm²)"), 
+       title = paste("Distribution of", distance_var, "on log scale"))
+
+
+breaks_raw <- c(0, 1, 5, 10, 50, 100, 500, 1000)   # pick break values you like
+offset     <- 1                                    # same offset
+
+ggplot(lymphocyte_features,
+       aes(x = .data[[log_distance_var]])) +       # logged data column
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey80", colour = "black", alpha = 0.6) +
+  geom_density(colour = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = log10(median_val + offset), colour = "red") +
+  scale_x_continuous(
+        breaks = log10(breaks_raw + offset),       # where the ticks sit
+        labels = breaks_raw                        # what the ticks say
+  ) +
+  labs(x = paste(distance_var, "(per 1000 µm²)"), 
+       title = paste("Distribution of", distance_var, "on log scale"))
+
+offset <- 1                     # same value you add inside aes()
+
+# *** Re-compute the summary on the *same* vector you give ggplot ***
+median_raw   <- median(lymphocyte_features[[distance_var]] + offset, na.rm = TRUE)
+q1_raw       <- quantile(lymphocyte_features[[distance_var]] + offset, 0.25, na.rm = TRUE)
+q3_raw       <- quantile(lymphocyte_features[[distance_var]] + offset, 0.75, na.rm = TRUE)
+
+ggplot(lymphocyte_features,
+       aes(x = .data[[distance_var]] + offset)) +   # raw + offset
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey80", colour = "black", alpha = 0.6) +
+  geom_density(colour = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_raw, colour = "red") +
+  geom_vline(xintercept = q1_raw,     colour = "darkgreen", linetype = "dashed") +
+  geom_vline(xintercept = q3_raw,     colour = "darkgreen", linetype = "dashed") +
+  scale_x_log10(labels = scales::label_comma()) +
+  labs(x = paste(distance_var, "(per 1000 µm²)"))
+
+library(dplyr); library(ggplot2)
+
+offset <- 1                               # same offset as in aes()
+
+# ---------- 1. get the exact breaks the histogram will use ----------
+hist_info   <- hist(lymphocyte_features[[distance_var]] + offset,
+                   breaks = 30,           # same `bins = 30` you give ggplot
+                   plot   = FALSE)
+breaks_raw  <- hist_info$breaks           # 31 break points (left edges + rightmost edge)
+
+# ---------- 2. recompute your summary stats on the *same* vector ----------
+median_raw  <- median(lymphocyte_features[[distance_var]] + offset, na.rm = TRUE)
+q1_raw      <- quantile(lymphocyte_features[[distance_var]] + offset, 0.25, na.rm = TRUE)
+q3_raw      <- quantile(lymphocyte_features[[distance_var]] + offset, 0.75, na.rm = TRUE)
+
+# ---------- 3. plot ----------
+ggplot(lymphocyte_features,
+       aes(x = .data[[distance_var]] + offset)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 breaks = breaks_raw,     # << use the same breaks
+                 fill = "grey80", colour = "black", alpha = 0.6) +
+  geom_density(colour = "blue", linewidth = 0.7) +
+  geom_vline(xintercept = median_raw, colour = "red") +
+  geom_vline(xintercept = q1_raw,     colour = "darkgreen", linetype = "dashed") +
+  geom_vline(xintercept = q3_raw,     colour = "darkgreen", linetype = "dashed") +
+  scale_x_log10(
+        breaks       = breaks_raw,               # tick at every bar edge
+        minor_breaks = NULL,                     # keep it clean
+        labels       = scales::label_number(accuracy = 1)
+  ) +
+  labs(x = paste(distance_var, "(per 1000 µm²)"))
+
+
+
+```
+
+- **villi_epithelium_lymphocytes_mean_log_closest_neighbor**
 
 
 ## Explore villi_epithelium_lymphocytes_median_log_closest_neighbor_um as a measure of cellularity in villus epithelum
