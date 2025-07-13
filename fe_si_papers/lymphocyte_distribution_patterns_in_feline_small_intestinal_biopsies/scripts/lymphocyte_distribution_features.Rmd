@@ -552,6 +552,96 @@ write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summarie
 ```
 
 
+### Process grading_sample
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(sf)
+library(nngeo)
+
+model_version <- "fe_si_combos_pv2_mv2"
+subset_name <- "grading_sample"
+
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_batch_0.json") %>% select(image_name, pixel_length_um, pixel_area_um2)
+
+mucosa_list <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json") %>% 
+  filter(image_name %in% subset$image_name) %>%
+  left_join(subset) %>%
+  filter(
+    (orientation_class == "adequate" | orientation_class == "marginal") &
+      (artefact_class == "adequate" | artefact_class == "marginal")) %>%
+  distinct()
+
+image_fragment_mucosa_names <- mucosa_list$name
+
+map_to_mucosa_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/merge_model_output/map_to_mucosa/output/map_to_mucosa/"
+
+features_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/"
+
+lymphocyte_features_summaries <- NULL
+
+for (img_frag_muc in image_fragment_mucosa_names){
+  
+  message("Processing ", img_frag_muc)
+  
+  mucosa_info <- mucosa_list %>% filter(name == img_frag_muc)
+  pixel_length_um <- mucosa_info$pixel_length_um
+  pixel_area_um2 <- mucosa_info$pixel_area_um2
+  
+  mapped_to_mucosa_path  <- paste0(map_to_mucosa_dir, img_frag_muc, "_", model_version, "_mapped_to_mucosa.geojson")
+  mapped_to_mucosa <- st_read(mapped_to_mucosa_path, quiet = TRUE) %>% st_set_crs(0) %>%
+    mutate(area_px2 = st_area(geometry),
+           area_um2 = area_px2 * pixel_area_um2)
+  
+  lymphocytes_path <- paste0(map_to_mucosa_dir, img_frag_muc, "_", model_version, "_mapped_to_mucosa_lymphocytes.geojson")
+  
+  lymphocytes <- st_read(lymphocytes_path, quiet = TRUE) %>% st_set_crs(0)
+  
+  #calculate distance to closest neighbor for lymphocytes
+  lymphocyte_distances <- calculate_lymphocyte_distances(mapped_to_mucosa, lymphocytes, pixel_length_um)
+  
+  #identify clusters of lymphocytes and generate 1)sep df with them 2) add cluster id to lcs
+  cluster_list <- generate_lymphocyte_clusters(lymphocytes, pixel_length_um, dbscan_eps_um = 7, dbscan_minPts = 3, buffer_um = 4)
+  
+  lymphocyte_clusters <- cluster_list$clusters
+  
+  #if no cluster - count as cluster size 1
+  lymphocytes_w_cluster_id <- cluster_list$lymphocytes  %>%
+    select(name, cluster_id, cluster_n_lymphocytes) %>%
+    st_drop_geometry()
+  
+  lymphocyte_distances <- lymphocyte_distances %>%
+    left_join(lymphocytes_w_cluster_id)
+  
+  write_json(lymphocyte_distances, paste0(features_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"), pretty = TRUE)
+  
+  lymphocyte_distances <- fromJSON(paste0(features_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"))
+  
+  lymphocyte_variables_to_plot <- c("measured_area_um2", "closest_junction_um",  "closest_neighbor_um", "log_closest_junction_um", "log_closest_neighbor_um", "cluster_n_lymphocytes")
+  
+  
+  lymphocyte_cluster_distances <- calculate_lymphocyte_distances(mapped_to_mucosa, lymphocyte_clusters, pixel_length_um)
+  
+ st_write(lymphocyte_clusters, paste0(features_dir, "lymphocyte_clusters/", img_frag_muc, "_lymphocyte_clusters.geojson"), quiet = TRUE, delete_dsn = TRUE)
+  
+  write_json(lymphocyte_cluster_distances, paste0(features_dir,"lymphocyte_clusters/", img_frag_muc, "_lymphocyte_cluster_distances.json"), pretty = TRUE)
+  
+  lymphocyte_cluster_distances <- fromJSON(paste0(features_dir,"lymphocyte_clusters/", img_frag_muc, "_lymphocyte_cluster_distances.json"))
+  
+  
+  lymphocyte_features_summary <- summarize_lymphocyte_features(mapped_to_mucosa, lymphocyte_distances, lymphocyte_cluster_distances, pixel_area_um2)
+  
+  lymphocyte_features_summaries <- bind_rows(lymphocyte_features_summaries, lymphocyte_features_summary)
+  
+  
+}
+
+write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summaries/lymphocyte_feature_summaries_", subset_name, ".json"), pretty = TRUE)
+  
+```
+
+
 
 ### Explored distributions of the following in labl_2020_tuning
 -lc_measured_area_um2 - normally distributed (mean, sd)
