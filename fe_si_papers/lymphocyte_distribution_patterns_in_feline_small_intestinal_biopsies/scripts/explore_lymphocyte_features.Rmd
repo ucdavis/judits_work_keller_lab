@@ -13,32 +13,41 @@ knitr::opts_chunk$set(echo = TRUE)
 The objective of this is to do a univariate "scan" - explore a range of candidate lymphocyte features 
 to select for project inclusion
 
+## Traditional pathologist features
+- **Intraepithelial cellularity**
+- **Intraepithelial clustering**
+- **Lamina propria cellularity**
+- **Lamina propria patchyness**
+- **Distribution compared to junction**
+- **Lymphocyte size**
+- **Lymphocyte monomorphism**
 
+## AI-derived lymphocyte features
+- **Distance to closest lymphocyte** & **Lymphocyte count per 1000 um2**
+- **Pct lymphocytes in clusters** 
 
-- **lymphocyte cellularity**
-  - *lymphocytes_median_log_closest_neighbor_um* (left skewed - log transformation and median iqr)
-  - *lymphocyte_count_per_1000_um2*
-  - *epithelium_lamina_propria_ratio*
-  
-- **patchy infiltration / clustering**
-  - *lymphocytes_cluster_median_closest_neighbor_um*
-  - *lymphocytes_cluster_count_per_1000_um2*
-  - *lymphocytes_cluster_iqr_log_closest_neighbor_um*
-  - *lymphocytes_cluster_median_cluster_n_lymphocytes*
-  - *lymphocytes_cluster_iqr_log_cluster_n_lymphocytes *
-  - *lymphocytes_cluster_iqr_log_closest_junction_um*
-  - *lymphocytes_iqr_log_closest_neighbor_um * (left skewed - log transformation and median iqr) - low - clusters?
-
-- **junctional_gradient**
-  -*median_log_closest_junction_um*(left skewed - log transformation makes it right skewed)
-  -*lymphocytes_cluster_median_log_closest_junction_um*
  
-- **size**
-  -*mean_measured_area_um2 *
-- **heterogeneity**
-  -*sd_measured_area_um2 *
+- **Lymphocyte size**
+Expect to correlate with pathologists assessment for size (average) and monomorphism (measure of spread)
+Need to establish:
+  - Method to aggregate by mucosal segment (mean and sd vs median and iqr) 
+  Distribution single segment
+  - Value of measuring separately for separate layers and compartments (correlation between villi epithelium and crypt epithelium and villi lamina propria and crypt lamina propria and epithelium and lamina propria)
+  Pearson & scatterplot
+  - Association between average and pathologists grade for size
+  ANOVA and boxplot
+  - Association between variability and pathologists grade for monomorphism
+  ANOVA and boxplot
+- **Distance to junction**
+Expect to correlate with pathologists grade for junctional gradient.
+  - Method to aggregate by mucosal segment (mean and sd vs median and iqr) 
+  Segment distribution example
+  - Correlation between mean and sd. 
+  Pearson and scatterplot
+  - Association between mean and pathologists grade for junctional distribution
+  ANOVA and boxplot
 
-```{r}
+```{r, message=FALSE}
 library(jsonlite)
 library(tidyverse)
 
@@ -105,6 +114,2640 @@ lymphocyte_features <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_pap
 
 ```
 
+### Explore lymphocyte counts
+#### Objective
+Lymphocyte count (normalized to surface area) is expected to correlate with pathologists cellularity grade. It is expected to be correlate (negatively) with distance to closest lymphocyte, but be more affected by regions without lymphocyte infiltrations (lower count if there are vast areas without lymphocytes but all lymphocytes are close together)
+#### Need to establish
+- **Transformation**
+Right skewed as non-transformed but left skewed as transformed - use non-transformed
+- **Normalization**
+Not normaly distributed - use robust scaling
+```{r}
+lymphocyte_features <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_batch_1.json"))
+
+counts <- lymphocyte_features %>%
+  select(image_name:mucosa_name,
+         villi_epithelium_lymphocyte_count_per_1000_um2,
+         crypts_epithelium_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2) %>%
+  mutate(across(
+    where(is.numeric),
+    ~(log10(.x) + 1),
+    .names = "log_{.col}"
+  )) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+to_plot <-  c("villi_epithelium_lymphocyte_count_per_1000_um2", 
+              "crypts_epithelium_lymphocyte_count_per_1000_um2", 
+              "villi_lamina_propria_lymphocyte_count_per_1000_um2",
+              "crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+              "log_villi_epithelium_lymphocyte_count_per_1000_um2",
+              "log_crypts_epithelium_lymphocyte_count_per_1000_um2", 
+              "log_villi_lamina_propria_lymphocyte_count_per_1000_um2",
+              "log_crypts_lamina_propria_lymphocyte_count_per_1000_um2")
+
+for (var in to_plot){
+  p <- plot_hist_density_stats(
+  counts,
+  value_var = var,
+  n_breaks  = 12
+) +
+  labs(
+    title = var,
+    x     = var
+  )
+  
+  ggsave(
+  filename = paste0(explore_features_dir, var, ".png"),   # change as needed
+  plot     = p,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+  
+}
+
+```
+
+
+
+### Explore distance to closest lymphocyte 
+#### Objective
+Distance to closest lymphocyte is expected to correlate with 1) pathologists cellularity grade and 2) normalized lymphocyte count (lymphocytes per region area) but be more granular. 
+Need to establish:
+  - **Method to aggregate by mucosal segment (mean and sd vs median and iqr)**
+  Assessed this by plotting the distribution of thw distance to closest neighbor for mucosal segments from labl_2020_tuning sample (fe_si_papers/lymphocyte_dsitribution.../output/lymphocyte_distribution_features/plots/lymphocytes_closest_neighbor_um vs. lympchocytes_log_closest_neighbor_um. Example for paper plotted below
+  - **Method for normalization** - z-score vs. robust
+  Based on distribution of values in pilot (batch 1).
+  - Correlation between measure of centrality (mean) vs measure of variability (sd) - how much do they correlation 
+  Pearson and correlation plot
+  - **Correlation between means and sds**
+  Mean and sd is expected to be positively correlated to some degree, since denser lymphocyte infiltration should have lower but more similar distances. This is to make sure the values are not too correlated (should still add information to use both for clustering)
+  
+  - **Correlation between mean and normalized count**
+  Pearson and correlation plot
+  
+#### Decision
+- **Method to aggregated by mucosal segment**: Mean and sd of log transformed values
+- **Method for normalization**: Robust (by iqr). The distribution of both mean
+and averages are often right skewed (for both epithelial and lamina propria
+in both villi and crypts). Transforming again would jeopardize intreretability.
+- **Correlation between mean distance and sd distance**
+Mean and standard deviation for distance to closest lymphocytes were highly correlated in lamina
+propria (0.89 for villi and 0.85 for crypts) but only moderately correlated for epithelium (0.56 for villi and 0.54 for crypts). Based on this alone I would drop sd distance for lamina propria (uninformative) but I am still interested in exploring how it relates to patchy lamina propria infiltration. Keep for now.
+- **Correlation between mean distance and count**
+Mean distance to closest lymphocyte and counts were highly negatively correlated in all layers and compartments (-0.68, villi epithelium, - 0.75 crypts epithelium, -0.74 villi lamina propria and -0.77 crypts lamina propria). At the lower and upper ends of the spectrum count tended to be more extreme than distance (slightly bent relation). Dropped count for all compartments.
+
+#### To assess against pathologists grades
+  - Association between mean and pathologists cellularity grade by compartment and layer
+  ANOVA and boxplot
+  - Correlation between sd and pathologists clustering grade (for epithelium)
+  ANOVA and boxplot
+  - Correlation between sd and pathologists patchy grade (for lamina propria)
+  ANOVA and boxplot
+  
+```{r, distance to closest lynphocyte}
+#Selected method for aggregation- example (from mid distr. ie villi batch 1)
+
+ex_15B2894_T2_06_01 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/lymphocyte_distances/15B2894_T2_he_2025-02-06_06_01_lymphocyte_distances.json") %>%
+  filter(classification == "villi_epithelium_lymphocytes")
+
+p_raw <- plot_hist_density_stats(
+  ex_15B2894_T2_06_01,
+  value_var = "closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Distance to closest lymphocyte in villus epithelium for one mucosal segment",
+    x     = "Distance to closest lymphocyte um"
+  )
+
+p_raw
+ggsave(
+  filename = paste0(explore_features_dir, "example_dtcl_15B2894_T2_06_01.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  ex_15B2894_T2_06_01,
+  value_var = "log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Distance to closest lymphocyte in villus epithelium (one mucosal segment) - log transformed",
+    x     = "Log₁₀ (distance to closest lymphocyte um)"
+  ) 
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "example_dtcl_log_15B2894_T2_06_01.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi epithelium
+dtcl_ie_villi <- lymphocyte_features %>%
+  select(villi_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         villi_epithelium_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_villi_epithelium_lymphocyte_count_per_1000_um2 =
+      log10(villi_epithelium_lymphocyte_count_per_1000_um2) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_villi,
+  value_var = "villi_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in villus epithelium - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_villi,
+  value_var = "villi_epithelium_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in villus epithelium (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_villi,
+  value_var = "villi_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi epithelium (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_ie_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_ie_villi,
+  value_var = "log_villi_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi epithelium - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_ie_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi epithelium
+dtcl_ie_crypts <- lymphocyte_features %>%
+  select(crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_crypts_epithelium_lymphocyte_count_per_1000_um2 =
+      log10(crypts_epithelium_lymphocyte_count_per_1000_um2) + 1)  %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in crypt epithelium - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in crypt epithelium (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts epithelium (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "log_crypts_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts epithelium - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_ie_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi lamina propria
+dtcl_lp_villi <- lymphocyte_features %>%
+  select(villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_villi_lamina_propria_lymphocyte_count_per_1000_um2 =
+      log10(villi_lamina_propria_lymphocyte_count_per_1000_um2) + 1)  %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in villus lamina propria - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in villus lamina propria (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi lamina propria (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "log_villi_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi lamina propria - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_lp_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for crypts lp
+dtcl_lp_crypts <- lymphocyte_features %>%
+  select(crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_crypts_lamina_propria_lymphocyte_count_per_1000_um2 =
+      log10(crypts_lamina_propria_lymphocyte_count_per_1000_um2) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in crypt lamina_propria - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in crypt lamina propria (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts lamina propria (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "log_crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts lamina propria - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_lp_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_villi$villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_ie_villi$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nVilliepithelium",
+    subtitle = "Correlation coefficient: 0.56"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_ie_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nVilli lamina propria",
+    subtitle = "Correlation coefficient: 0.89"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_crypts, aes(
+  x = crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nCrypts epithelium",
+    subtitle = "Correlation coefficient: 0.54"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_ie_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: 0.85"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_villi$villi_epithelium_lymphocyte_count_per_1000_um2_robust,
+  dtcl_ie_villi$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_villi, aes(
+  x = villi_epithelium_lymphocyte_count_per_1000_um2_robust, 
+  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs count\nVilli epithelium",
+    subtitle = "Correlation coefficient: -0.68"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_ie_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_villi$villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_villi, aes(
+  x = villi_lamina_propria_lymphocyte_count_per_1000_um2_robust, 
+  y = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs.count\nDistance to closest lymphocyte\nVilli lamina propria",
+    subtitle = "Correlation coefficient: -0.74"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_crypts$crypts_epithelium_lymphocyte_count_per_1000_um2_robust,
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_crypts, aes(
+  x = crypts_epithelium_lymphocyte_count_per_1000_um2_robust, 
+  y = crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs.count\nCrypts epithelium",
+    subtitle = "Correlation coefficient: -0.75"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_ie_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocyte_count_per_1000_um2_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs. count\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: -0.77"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+```
+
+### Explore pct lymphocytes in clusters
+#### Objective
+Pct lymphocytes in clusters is expected to correlate with pathologists cluster assessment for epithelum.
+Need to establish:
+- **Need for transformation** & **Method for normalization**
+Based on distrbituion shape in pilot set
+- **Cut-off for cluster**
+5 commonly used in literature. If 3 correlates (expected) use that instead to gain info on lower ranges
+- **Correlation with mean log distance to closest lymphocyte**
+Expected negative correlation, but not similar enough to be redudant to include both.
+- **Correlation with sd log distance to closest lymphocyte**
+Expected negative correlation, but not similar enough to be redudant to include both.
+
+#### Decision
+- **Need for transformation**: 
+Non-transformed is right-tailed but log transformed is left-tailed. Keeping it non-transformed
+- **Method for normalization**: 
+Robust (medium centered, IQR corrected)
+- **Correlation between 3 and 5 as cluster cutoff**
+Very highly correlated - use 3 as cut off
+- **Correlation between pct cluster and mean log dist**
+Higher (negative) then expected (-0.71 for villi epithelium)  -still keep
+- **Correlation between pct cluster and sd log dist**
+Lower (negative) then expected (-0.62 for villi epithelium) - keep
+#### To assess against pathologists grades
+  - Association between pct_clusters pathologists grade by compartment and layer
+  ANOVA and boxplot
+  
+```{r clustering}
+#Temporary subset for villi epithelium
+pct_clusters_ie_villi <- lymphocyte_features %>%
+  select(villi_epithelium_lymphocytes_pct_cluster_ge_3,
+         villi_epithelium_lymphocytes_pct_cluster_ge_5,
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um) %>%
+  mutate(
+    log_villi_epithelium_lymphocytes_pct_cluster_ge_3 =
+      log10(villi_epithelium_lymphocytes_pct_cluster_ge_3) + 1,
+    log_villi_epithelium_lymphocytes_pct_cluster_ge_5 =
+      log10(villi_epithelium_lymphocytes_pct_cluster_ge_5) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_ie_villi,
+  value_var = "villi_epithelium_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more\n
+    Villi epithelium",
+    x     = "% lymphocytes in clusters of 3 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_3_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_ie_villi,
+  value_var = "log_villi_epithelium_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more - log transformed\n
+    Villi epithelium",
+    x     = "Log₁₀ (% lymphocytes in clusters of 3 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_3_epi_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_ie_villi,
+  value_var = "villi_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more\nVilli epithelium",
+    x     = "% lymphocytes in clusters of 5 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_5_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_ie_villi,
+  value_var = "log_villi_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more - log transformed\nVilli epithelium",
+    x     = "Log₁₀ (% lymphocytes in clusters of 5 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_5_epi_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi epithelium
+pct_clusters_ie_crypts <- lymphocyte_features %>%
+  select(crypts_epithelium_lymphocytes_pct_cluster_ge_3,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_5,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um) %>%
+  mutate(
+    log_crypts_epithelium_lymphocytes_pct_cluster_ge_3 =
+      log10(crypts_epithelium_lymphocytes_pct_cluster_ge_3) + 1,
+    log_crypts_epithelium_lymphocytes_pct_cluster_ge_5 =
+      log10(crypts_epithelium_lymphocytes_pct_cluster_ge_5) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more\nCrypts epithelium",
+    x     = "% lymphocytes in clusters of 3 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_3_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_ie_crypts,
+  value_var = "log_crypts_epithelium_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more - log transformed\nCrypts epithelium",
+    x     = "Log₁₀ (% lymphocytes in clusters of 3 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_3_epi_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more\nVilli crypts",
+    x     = "% lymphocytes in clusters of 5 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_5_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_ie_crypts,
+  value_var = "log_crypts_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more - log transformed\nCrypts epithelium",
+    x     = "Log₁₀ (% lymphocytes in clusters of 5 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_5_epi_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_pct_cluster_ge_5_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_epithelium_lymphocytes_pct_cluster_ge_5_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized:% lymphocytes in clusters of 5 or larger",
+    title = "Cluster size 5 vs 3\nVilli epithelium",
+    subtitle = "Correlation coefficient: 0.95"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_lc_in_cl_3_vs_5_ie_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Mean Log distance to closest lymphocyte",
+    title = "Distance vs cluster\nVilli epithelium",
+    subtitle = "Correlation coefficient: -0.71"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_clust_epi_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+cor.test(
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_villi$villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Distance sd vs cluster\nVilli epithelium",
+    subtitle = "Correlation coefficient: -0.62"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_dist_vs_clust_epi_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+cor.test(
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_5_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_epithelium_lymphocytes_pct_cluster_ge_5_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized:% lymphocytes in clusters of 5 or larger",
+    title = "Cluster size 5 vs 3\nCrypts epithelium",
+    subtitle = "Correlation coefficient: 0.94"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_lc_in_cl_3_vs_5_ie_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_crypts, aes(
+  x = crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Mean Log distance to closest lymphocyte",
+    title = "Distance vs cluster\nCrypts epithelium",
+    subtitle = "Correlation coefficient: -0.79"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "dist_vs_clust_epi_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+cor.test(
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_ie_crypts, aes(
+  x = crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust, 
+  y = crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Distance sd vs cluster\nCrypts epithelium",
+    subtitle = "Correlation coefficient: -0.52"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "dist_vs_clust_epi_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+#LAMINA PROPRIA
+#Temporary subset for villi epithelium
+pct_clusters_lp_villi <- lymphocyte_features %>%
+  select(villi_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         villi_lamina_propria_lymphocytes_pct_cluster_ge_5,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um) %>%
+  mutate(
+    log_villi_lamina_propria_lymphocytes_pct_cluster_ge_3 =
+      log10(villi_lamina_propria_lymphocytes_pct_cluster_ge_3) + 1,
+    log_villi_lamina_proprialymphocytes_pct_cluster_ge_5 =
+      log10(villi_lamina_propria_lymphocytes_pct_cluster_ge_5) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more\n
+    Villi lamina propria",
+    x     = "% lymphocytes in clusters of 3 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_3_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_lp_villi,
+  value_var = "log_villi_lamina_propria_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more - log transformed\n
+    Villi lamina propria",
+    x     = "Log₁₀ (% lymphocytes in clusters of 3 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_3_lp_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more\nVilli lamina propria",
+    x     = "% lymphocytes in clusters of 5 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_5_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_lp_villi,
+  value_var = "log_villi_lamina_proprialymphocytes_pct_cluster_ge_5_robust",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more - log transformed\nVilli lamina propria",
+    x     = "Log₁₀ (% lymphocytes in clusters of 5 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_5_lp_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi epithelium
+pct_clusters_lp_crypts <- lymphocyte_features %>%
+  select(crypts_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         crypts_lamina_propria_lymphocytes_pct_cluster_ge_5,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um) %>%
+  mutate(
+    log_crypts_lamina_propria_lymphocytes_pct_cluster_ge_3 =
+      log10(crypts_lamina_propria_lymphocytes_pct_cluster_ge_3) + 1,
+    log_crypts_lamina_propria_lymphocytes_pct_cluster_ge_5 =
+      log10(crypts_lamina_propria_lymphocytes_pct_cluster_ge_5) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more\nCrypts lamina propria",
+    x     = "% lymphocytes in clusters of 3 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_3_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_lp_crypts,
+  value_var = "log_crypts_lamina_propria_lymphocytes_pct_cluster_ge_3",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 3 or more - log transformed\nCrypts lamina propria",
+    x     = "Log₁₀ (% lymphocytes in clusters of 3 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_3_lp_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  pct_clusters_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more\nCrypts lamina propria",
+    x     = "% lymphocytes in clusters of 5 or more"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_cl_5_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  pct_clusters_lp_crypts,
+  value_var = "log_crypts_lamina_propria_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% lymphocytes in clusters of 5 or more - log transformed\nCrypts lamina propria",
+    x     = "Log₁₀ (% lymphocytes in clusters of 5 or more)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_pct_cl_5_lp_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_pct_cluster_ge_5_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_lamina_propria_lymphocytes_pct_cluster_ge_5_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized:% lymphocytes in clusters of 5 or larger",
+    title = "Cluster size 5 vs 3\nVilli lamina propria",
+    subtitle = "Correlation coefficient: 0.97"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_lc_in_cl_3_vs_5_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Mean Log distance to closest lymphocyte",
+    title = "Distance vs cluster\nVilli lamina propria",
+    subtitle = "Correlation coefficient: -0.79"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_clust_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+cor.test(
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_lp_villi$villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Distance sd vs cluster\nVilli lamina propria",
+    subtitle = "Correlation coefficient: -0.62"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_dist_vs_clust_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+cor.test(
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_ie_crypts$crypts_epithelium_lymphocytes_pct_cluster_ge_5_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = villi_lamina_propria_lymphocytes_pct_cluster_ge_5_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized:% lymphocytes in clusters of 5 or larger",
+    title = "Cluster size 5 vs 3\nCrypts lamina_propria",
+    subtitle = "Correlation coefficient: 0.94"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "pct_lc_in_cl_3_vs_5_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  pct_clusters_lp_crypts$crypts_lamina_propria_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_lp_crypts$crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Mean Log distance to closest lymphocyte",
+    title = "Distance vs cluster\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: -0.79"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "dist_vs_clust_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+cor.test(
+  pct_clusters_lp_crypts$crypts_lamina_propria_lymphocytes_pct_cluster_ge_3_robust,
+  pct_clusters_lp_crypts$crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(pct_clusters_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocytes_pct_cluster_ge_3_robust, 
+  y = crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: % lymphocytes in clusters of 3 or larger",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Distance sd vs cluster\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: -0.56"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "dist_vs_clust_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+```
+
+### Lymphocyte size
+Expect to correlate with pathologists assessment for size (average) and monomorphism (measure of spread)
+Need to establish:
+- **Method to aggregate by mucosal segment** (mean and sd vs median and iqr) 
+  Distribution single segment
+- **Value of measuring separately for separate layers and compartments** (correlation between villi epithelium and crypt epithelium and villi lamina propria and crypt lamina propria and epithelium and lamina propria)
+  Pearson & scatterplot
+#### Decision
+- **Method to aggregate by mucosal segment** 
+This is normally distributed (non-transformed) - mean and sd summarizes well
+- **Method for normlization** 
+Mean Also normally distributed between segments, z-score would have worked well but use robust to be consistent across variables
+- **correlation crypt villi**
+Lamina propria lymphocyte size, has higher correlation between crypts and villi than epithelial lymphocyte size. I wonder if false positive epithelial cells in crypt region contributes. Keep to see
+if it helps poor performance cluster out. 
+#### To compare with pathologist
+  - Association between average and pathologists grade for size
+  ANOVA and boxplot
+  - Association between variability and pathologists grade for monomorphism
+  ANOVA and boxplot
+### Distance to junction
+```{r junction}
+size <- lymphocyte_features %>%
+  select(image_name:mucosa_name,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2) %>%
+  mutate(across(
+    where(is.numeric),
+    ~(log10(.x) + 1),
+    .names = "log_{.col}"
+  )) %>%
+    
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  size,
+  value_var = "villi_epithelium_lymphocytes_mean_measured_area_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Nuclear size\n
+    Villi epithelium",
+    x     = "Mean nuclear area um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_size_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  size,
+  value_var = "villi_epithelium_lymphocytes_sd_measured_area_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Nuclear size variability\n
+    Villi epithelium",
+    x     = "Sd nuclear area um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_size_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  size,
+  value_var = "log_villi_epithelium_lymphocytes_sd_measured_area_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Log sd lymphocyte size\n
+    Villi epithelium",
+    x     = "Log₁₀ (Sd nuclear area um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_sd_size_epi_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+
+cor.test(
+  size$villi_epithelium_lymphocytes_mean_measured_area_um2_robust,
+  size$crypts_epithelium_lymphocytes_mean_measured_area_um2_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(size, aes(
+  x = villi_epithelium_lymphocytes_mean_measured_area_um2_robust, 
+  y = crypts_epithelium_lymphocytes_mean_measured_area_um2_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: mean lymphocyte size villi ",
+    y = "Normalized: mean lymphocyte size crypts",
+    title = "Epithelial lymphocyte size villi vs crypt",
+    subtitle = "Correlation coefficient: 0.73"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "ie_lc_size_villi_vs_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+
+cor.test(
+  size$villi_lamina_propria_lymphocytes_mean_measured_area_um2_robust,
+  size$crypts_lamina_propria_lymphocytes_mean_measured_area_um2_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(size, aes(
+  x = villi_lamina_propria_lymphocytes_mean_measured_area_um2_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_measured_area_um2_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: mean lymphocyte size villi ",
+    y = "Normalized: mean lymphocyte size crypts",
+    title = "Lamina propria lymphocyte size villi vs crypt",
+    subtitle = "Correlation coefficient: 0.87"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "lp_lc_size_villi_vs_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+
+```
+
+### Distance to junction
+- *aggregate?*
+Median and iqr of log-transformed
+Irregular both as non-transformed (right skewed, irregular) and transformed (left-skewed slightly smoother)
+- *normalize*
+Both median and iqr of the log transformed distance are unexpectedly normal distributed
+across segments. Z-score would have worked but use robust scaling to stay consistent
+- *correlations villi vs crypt*
+Neither intraepithelial nor lamina propria lymphocyte distance to junction correlate across layers. 
+Suspsect since this is more driven by orientation then biology. Consider excluding.
+```{r}
+junction <- lymphocyte_features %>%
+  select(image_name:mucosa_name,
+         villi_epithelium_lymphocytes_median_log_closest_junction_um,
+         villi_epithelium_lymphocytes_iqr_log_closest_junction_um,
+         villi_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         villi_lamina_propria_lymphocytes_iqr_log_closest_junction_um,
+         crypts_epithelium_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lymphocytes_iqr_log_closest_junction_um,
+         crypts_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         crypts_lamina_propria_lymphocytes_iqr_log_closest_junction_um,
+         ) %>%
+  mutate(across(
+    where(is.numeric),
+    ~(log10(.x) + 1),
+    .names = "log_{.col}"
+  )) %>%
+    
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "villi_epithelium_lymphocytes_median_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Median log distance to closest junction\n
+    Villi epithelium",
+    x     = "Median log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "median_log_dtcj_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "crypts_epithelium_lymphocytes_median_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Median log distance to closest junction\n
+    Crypts epithelium",
+    x     = "Median log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "median_log_dtcj_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "villi_lamina_propria_lymphocytes_median_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Median log distance to closest junction\n
+    Villi lamina propria",
+    x     = "Median log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "median_log_dtcj_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "crypts_lamina_propria_lymphocytes_median_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Median log distance to closest junction\n
+    Crypts lamina propria",
+    x     = "Median log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "median_log_dtcj_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "villi_epithelium_lymphocytes_iqr_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Iqrlog distance to closest junction\n
+    Villi epithelium",
+    x     = "Iqr log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "iqr_log_dtcj_epi_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "crypts_epithelium_lymphocytes_iqr_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Iqr log distance to closest junction\n
+    Crypts epithelium",
+    x     = "Iqr log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "iqr_log_dtcj_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "villi_lamina_propria_lymphocytes_iqr_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Iqr log distance to closest junction\n
+    Villi lamina propria",
+    x     = "Iqr log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "iqr_log_dtcj_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  junction,
+  value_var = "crypts_lamina_propria_lymphocytes_iqr_log_closest_junction_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Iqrlog distance to closest junction\n
+    Crypts lamina propria",
+    x     = "Iqr log distance to closest junction um"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "iqr_log_dtcj_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 ) 
+
+
+cor.test(
+  junction$villi_epithelium_lymphocytes_median_log_closest_junction_um_robust,
+  junction$crypts_epithelium_lymphocytes_median_log_closest_junction_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(junction, aes(
+  x = villi_epithelium_lymphocytes_median_log_closest_junction_um_robust, 
+  y = crypts_epithelium_lymphocytes_median_log_closest_junction_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: median log distance to juncton villi ",
+    y = "Normalized: median log distance to juncton crypts",
+    title = "Epithelial lymphocyte distance to junction villi vs crypt",
+    subtitle = "Correlation coefficient: 0.003"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "ie_dtcj_villi_vs_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+
+cor.test(
+  junction$villi_lamina_propria_lymphocytes_median_log_closest_junction_um_robust,
+  junction$crypts_lamina_propria_lymphocytes_median_log_closest_junction_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(junction, aes(
+  x = villi_lamina_propria_lymphocytes_median_log_closest_junction_um_robust, 
+  y = crypts_lamina_propria_lymphocytes_median_log_closest_junction_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: median log distance to juncton villi ",
+    y = "Normalized: median log distance to juncton crypts",
+    title = "Lamina propria lymphocyte distance to junction villi vs crypt",
+    subtitle = "Correlation coefficient: 0.007"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "ie_dtcj_villi_vs_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+```
+
+
+
+```{r}
+#Temporary subset for villi epithelium
+dtcl_ie_crypts <- lymphocyte_features %>%
+  select(crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_crypts_epithelium_lymphocyte_count_per_1000_um2 =
+      log10(crypts_epithelium_lymphocyte_count_per_1000_um2) + 1)  %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in crypt epithelium - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in crypt epithelium (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "crypts_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts epithelium (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_epi_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_ie_crypts,
+  value_var = "log_crypts_epithelium_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts epithelium - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_ie_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for villi lamina propria
+dtcl_lp_villi <- lymphocyte_features %>%
+  select(villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_villi_lamina_propria_lymphocyte_count_per_1000_um2 =
+      log10(villi_lamina_propria_lymphocyte_count_per_1000_um2) + 1)  %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in villus lamina propria - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in villus lamina propria (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "villi_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi lamina propria (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_lp_villi.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_lp_villi,
+  value_var = "log_villi_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, villi lamina propria - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_lp_villi.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+#Temporary subset for crypts lp
+dtcl_lp_crypts <- lymphocyte_features %>%
+  select(crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um, 
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2) %>%
+  mutate(
+    log_crypts_lamina_propria_lymphocyte_count_per_1000_um2 =
+      log10(crypts_lamina_propria_lymphocyte_count_per_1000_um2) + 1) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+#Select method for normalization 
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Mean log distance to closest lymphocyte in crypt lamina_propria - (across pilot set)",
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Standard deviation log distance to closest lymphocytes in crypt lamina propria (across pilot set)",
+    x     = "Sd Log₁₀ (distance to closest lymphocyte um)"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "sd_log_dtcl_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_raw <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts lamina propria (across pilot set)",
+    x     = "Lymphocyte count per 1000 um2"
+  )
+
+p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_lp_crypts.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+p_log <- plot_hist_density_stats(
+  dtcl_lp_crypts,
+  value_var = "log_crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+  n_breaks  = 12
+) +
+  labs(
+    title = "Normalized lymphocyte counts, crypts lamina propria - log transformed (across pilot set)",
+    x     = "Log₁₀ (Lymphocyte count per 1000 um2)"
+  )
+
+p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_count_lp_crypts.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_villi$villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_ie_villi$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_villi, aes(
+  x = villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nVilliepithelium",
+    subtitle = "Correlation coefficient: 0.56"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_ie_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_villi, aes(
+  x = villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nVilli lamina propria",
+    subtitle = "Correlation coefficient: 0.89"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_crypts, aes(
+  x = crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nCrypts epithelium",
+    subtitle = "Correlation coefficient: 0.54"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_ie_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Sd Log distance to closest lymphocyte",
+    title = "Mean vs. standard deviation\nDistance to closest lymphocyte\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: 0.85"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_vs_sd_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_villi$villi_epithelium_lymphocyte_count_per_1000_um2_robust,
+  dtcl_ie_villi$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_villi, aes(
+  x = villi_epithelium_lymphocyte_count_per_1000_um2_robust, 
+  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs count\nVilli epithelium",
+    subtitle = "Correlation coefficient: -0.68"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_ie_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_villi$villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+  dtcl_lp_villi$villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_villi, aes(
+  x = villi_lamina_propria_lymphocyte_count_per_1000_um2_robust, 
+  y = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs.count\nDistance to closest lymphocyte\nVilli lamina propria",
+    subtitle = "Correlation coefficient: -0.74"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_lp_villi.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_ie_crypts$crypts_epithelium_lymphocyte_count_per_1000_um2_robust,
+  dtcl_ie_crypts$crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_ie_crypts, aes(
+  x = crypts_epithelium_lymphocyte_count_per_1000_um2_robust, 
+  y = crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs.count\nCrypts epithelium",
+    subtitle = "Correlation coefficient: -0.75"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_ie_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+cor.test(
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+  dtcl_lp_crypts$crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+  method = "pearson" 
+)
+
+corr <- ggplot(dtcl_lp_crypts, aes(
+  x = crypts_lamina_propria_lymphocyte_count_per_1000_um2_robust, 
+  y = crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust
+)) +
+  geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
+  geom_smooth(method = "lm", color = "orange") +        # Linear regression line
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
+  labs(
+    x = "Normalized: Mean Log distance to closest lymphocyte",
+    y = "Normalized: Lymphocyte count per 1000 um2",
+    title = "Mean distance vs. count\nCrypts lamina propria",
+    subtitle = "Correlation coefficient: -0.77"
+  )
+
+corr 
+
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_dist_vs_count_lp_crypts.png"),   # change as needed
+  plot     = corr,
+  width    = 3.5,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+```
+Expect to correlate with 1) pathologists cellularity grade and 2) normalized lymphocyte count (lymphocytes per region area) but be more granular. 
+Need to establish:
+  - Method to aggregate by mucosal segment (mean and sd vs median and iqr) 
+  - Correlation bewteen measure of centrality (mean) vs measure of variability (sd) - how much do they correlate.
+  - Correlation between mean and normalized count
+  - Association between mean and pathologists cellularity grade
+  - Correlation between sd and clustering measure (for epithelium)
+  - Correlation between sd and pathologists pathcy grade (for lamina propria)
+  
+  - Information of measure of 
+Also check how summary of variability in a segment correlate with clustering measures (pathologist grade and AI-derived measure)
+
+- **lymphocyte cellularity**
+  - *lymphocytes_median_log_closest_neighbor_um* (left skewed - log transformation and median iqr)
+  - *lymphocyte_count_per_1000_um2*
+  - *epithelium_lamina_propria_ratio*
+  
+- **patchy infiltration / clustering**
+  - *lymphocytes_cluster_median_closest_neighbor_um*
+  - *lymphocytes_cluster_count_per_1000_um2*
+  - *lymphocytes_cluster_iqr_log_closest_neighbor_um*
+  - *lymphocytes_cluster_median_cluster_n_lymphocytes*
+  - *lymphocytes_cluster_iqr_log_cluster_n_lymphocytes *
+  - *lymphocytes_cluster_iqr_log_closest_junction_um*
+  - *lymphocytes_iqr_log_closest_neighbor_um * (left skewed - log transformation and median iqr) - low - clusters?
+
+- **junctional_gradient**
+  -*median_log_closest_junction_um*(left skewed - log transformation makes it right skewed)
+  -*lymphocytes_cluster_median_log_closest_junction_um*
+ 
+- **size**
+  -*mean_measured_area_um2 *
+- **heterogeneity**
+  -*sd_measured_area_um2 *
+
+
+
 
 
 ### Explore 
@@ -121,17 +2764,22 @@ lymphocyte_features <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_pap
 - **villi_epithelium_lymphocyte_mean_log_distance_to_closest_neighbor**
   - Gives more granularity in that it together with sd captures distribution over segment
 
+
+
+
 ```{r}
 
 villi_ie_cellularity_features <- lymphocyte_features %>% select(
   image_name:mucosa_name,
   villi_epithelium_lymphocyte_count_per_1000_um2,
-  villi_epithelium_lymphocytes_mean_log_closest_neighbor_um) %>%
+  villi_epithelium_lymphocytes_mean_log_closest_neighbor_um, 
+  villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+  ) %>%
   mutate(
     log_villi_epithelium_lymphocyte_count_per_1000_um2 = 
       log10(villi_epithelium_lymphocyte_count_per_1000_um2) + 1) %>%
   mutate(across(
-    c(log_villi_epithelium_lymphocyte_count_per_1000_um2, villi_epithelium_lymphocytes_mean_log_closest_neighbor_um),
+    c(log_villi_epithelium_lymphocyte_count_per_1000_um2, villi_epithelium_lymphocytes_mean_log_closest_neighbor_um, villi_epithelium_lymphocytes_sd_log_closest_neighbor_um),
     ~(.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
     .names = "{.col}_robust"
   ))
@@ -143,11 +2791,19 @@ p_log <- plot_hist_density_stats(
   n_breaks  = 14
 ) +
   labs(
-    title = "Lymphocyte counts per 1000 µm² for villi epithelium – log transformed",
+    title = "Normalized lymphocyte counts - log transformed",
     x     = "Log₁₀ (lymphocytes per 1000 µm²)"   # adjust wording if needed
   )
 
 p_log
+
+ggsave(
+  filename = paste0(explore_features_dir, "log_ie_lc_count.png"),   # change as needed
+  plot     = p_log,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
 
 p_raw <- plot_hist_density_stats(
   villi_ie_cellularity_features,
@@ -156,10 +2812,19 @@ p_raw <- plot_hist_density_stats(
 ) +
   labs(
     title = "Mean log distance to closest neigbhor um",
-    x     = "Mean log distance to closest neighbor um"
+    x     = "Mean Log₁₀ (distance to closest lymphocyte um)"
   )
 
 p_raw
+
+ggsave(
+  filename = paste0(explore_features_dir, "mean_log_dtcl.png"),   # change as needed
+  plot     = p_raw,
+  width    = 7,        # inches
+  height   = 1.75,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
 
 cor.test(
   villi_ie_cellularity_features$log_villi_epithelium_lymphocyte_count_per_1000_um2_robust,
@@ -167,19 +2832,36 @@ cor.test(
   method = "pearson" # or "spearman" if non-linear
 )
 
-ggplot(villi_ie_cellularity_features, aes(
+corr <- ggplot(villi_ie_cellularity_features, aes(
   x = log_villi_epithelium_lymphocyte_count_per_1000_um2_robust, 
   y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
 )) +
   geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
   geom_smooth(method = "lm", color = "orange") +        # Linear regression line
-  theme_minimal() +
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
   labs(
-    x = "Normalized: log lymphs per 1000 µm²",
-    y = "Normalized: Mean log closest neighbor distance (µm)",
-    title = "Correlation Between Normalized Lymphocyte Features",
+    x = "Normalized: log lymphocytes per 1000 µm²",
+    y = "Normalized: Mean Log distance to closest lymphocyte",
+    title = "Distance to closest lymphocyte vs. distance to closest lymphocyte",
     subtitle = "Correlation coefficient: -0.78"
   )
+
+corr 
+
+ggsave(
+  filename = paste0(explore_features_dir, "count_vs_dtcl_ie.png"),   # change as needed
+  plot     = corr,
+  width    = 7,        # inches
+  height   = 3.5,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+
+
+
+
+
 ```
 
 
@@ -204,67 +2886,152 @@ ggplot(villi_ie_cellularity_features, aes(
 - **villi_epithelium_lymphocytes_pct_cluster_ge_20**
 - **villi_epithelium_lymphocytes_pct_cluster_ge_25**
 ```{r}
-
-villi_ie_cellularity_features <- lymphocyte_features %>% select(
+villi_ie_cluster_features <- lymphocyte_features %>% select(
   image_name:mucosa_name,
-  villi_epithelium_lymphocyte_count_per_1000_um2,
-  villi_epithelium_lymphocytes_mean_log_closest_neighbor_um) %>%
-  mutate(
-    log_villi_epithelium_lymphocyte_count_per_1000_um2 = 
-      log10(villi_epithelium_lymphocyte_count_per_1000_um2) + 1) %>%
+  villi_epithelium_lymphocytes_pct_cluster_ge_3,
+  villi_epithelium_lymphocytes_pct_cluster_ge_5, 
+  villi_epithelium_lymphocytes_pct_cluster_ge_10,
+  villi_epithelium_lymphocytes_pct_cluster_ge_15,
+  villi_epithelium_lymphocytes_pct_cluster_ge_20,
+  villi_epithelium_lymphocytes_pct_cluster_ge_25,
+  villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes,
+  villi_epithelium_lymphocytes_cluster_iqr_log_cluster_n_lymphocytes,
+  villi_epithelium_lymphocytes_cluster_median_log_closest_neighbor_um,
+  villi_epithelium_lymphocytes_cluster_count_per_1000_um2) %>%
   mutate(across(
-    c(log_villi_epithelium_lymphocyte_count_per_1000_um2, villi_epithelium_lymphocytes_mean_log_closest_neighbor_um),
+    c(villi_epithelium_lymphocytes_pct_cluster_ge_3,
+  villi_epithelium_lymphocytes_pct_cluster_ge_5, 
+  villi_epithelium_lymphocytes_pct_cluster_ge_10,
+  villi_epithelium_lymphocytes_pct_cluster_ge_15,
+  villi_epithelium_lymphocytes_pct_cluster_ge_20,
+  villi_epithelium_lymphocytes_pct_cluster_ge_25,
+  villi_epithelium_lymphocytes_cluster_median_log_cluster_n_lymphocytes,
+  villi_epithelium_lymphocytes_cluster_iqr_log_cluster_n_lymphocytes,
+  villi_epithelium_lymphocytes_cluster_median_log_closest_neighbor_um,
+  villi_epithelium_lymphocytes_cluster_count_per_1000_um2),
     ~(.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
     .names = "{.col}_robust"
   ))
 
-# Log-transformed counts
-p_log <- plot_hist_density_stats(
-  villi_ie_cellularity_features,
-  value_var = "log_villi_epithelium_lymphocyte_count_per_1000_um2",
-  n_breaks  = 14
-) +
-  labs(
-    title = "Lymphocyte counts per 1000 µm² for villi epithelium – log transformed",
-    x     = "Log₁₀ (lymphocytes per 1000 µm²)"   # adjust wording if needed
-  )
-
-p_log
-
 p_raw <- plot_hist_density_stats(
-  villi_ie_cellularity_features,
-  value_var = "villi_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  villi_ie_cluster_features,
+  value_var = "villi_epithelium_lymphocytes_pct_cluster_ge_3",
   n_breaks  = 12
 ) +
   labs(
-    title = "Mean log distance to closest neigbhor um",
-    x     = "Mean log distance to closest neighbor um"
+    title = "% Intraepithelial lymphocytes in clusters > 3 (villi)",
+    x     = "% Intraepithelial lymphocytes in clusters > 3"
   )
 
 p_raw
 
+p_raw <- plot_hist_density_stats(
+  villi_ie_cluster_features,
+  value_var = "villi_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% Intraepithelial lymphocytes in clusters > 5 (villi)",
+    x     = "% Intraepithelial lymphocytes in clusters > 5"
+  )
+
+p_raw
+
+p_raw <- plot_hist_density_stats(
+  villi_ie_cluster_features,
+  value_var = "villi_epithelium_lymphocytes_pct_cluster_ge_5",
+  n_breaks  = 12
+) +
+  labs(
+    title = "% Intraepithelial lymphocytes in clusters > 5 (villi)",
+    x     = "% Intraepithelial lymphocytes in clusters > 5"
+  )
+
+p_raw
+
+
 cor.test(
-  villi_ie_cellularity_features$log_villi_epithelium_lymphocyte_count_per_1000_um2_robust,
-  villi_ie_cellularity_features$villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+  villi_ie_cluster_features$villi_epithelium_lymphocytes_pct_cluster_ge_5_robust,
+  villi_ie_cluster_features$villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
   method = "pearson" # or "spearman" if non-linear
 )
 
-ggplot(villi_ie_cellularity_features, aes(
-  x = log_villi_epithelium_lymphocyte_count_per_1000_um2_robust, 
-  y = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust
+corr <- ggplot(villi_ie_cluster_features, aes(
+  x = villi_epithelium_lymphocytes_pct_cluster_ge_5_robust, 
+  y = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust
 )) +
   geom_point(alpha = 0.6, color = "darkblue") +      # Scatter points
   geom_smooth(method = "lm", color = "orange") +        # Linear regression line
-  theme_minimal() +
+  theme_bw(base_size = 9) +
+  theme(plot.title = element_text(size = 10, face = "bold")) +
   labs(
-    x = "Normalized: log lymphs per 1000 µm²",
-    y = "Normalized: Mean log closest neighbor distance (µm)",
-    title = "Correlation Between Normalized Lymphocyte Features",
-    subtitle = "Correlation coefficient: -0.78"
+    x = "Normalized: % lympocytes in clusters over 5",
+    y = "Normalized: % lympocytes in clusters over 3",
+    title = "in over 5 vs. in over 3 cluster size - villi epithelium",
+    subtitle = "Correlation coefficient: 0.94"
   )
+
+corr 
+
+
+
+
 ```
 
+```{r}
+library(dplyr)
 
+
+vars <- c(
+  "villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust",
+  "villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust",
+  "villi_epithelium_lymphocytes_pct_cluster_ge_3_robust"
+)
+
+# 1  Create the feature matrix (no extra scaling)
+X <- select_features %>%          # replace with your segment-level data frame
+  select(all_of(vars)) %>% 
+  as.matrix()                 # kmeans needs a numeric matrix/data.frame
+
+# quick check
+stopifnot(ncol(X) == 3)       # should pass without error
+
+# 2  Elbow-plot WSS
+set.seed(42)
+k_max <- 25
+wss <- sapply(1:k_max, function(k) {
+  kmeans(X, centers = k, nstart = 25)$tot.withinss
+})
+
+# 3  Plot
+library(ggplot2)
+ggplot(data.frame(k = 1:k_max, wss = wss), aes(k, wss)) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 1:k_max) +
+  labs(title = "Elbow plot for k-means",
+       x = "Number of clusters (k)",
+       y = "Total within-cluster SS") +
+  theme_minimal()
+
+set.seed(42)                 # reproducible
+k    <- 6                    # or 7
+km   <- kmeans(X, centers = k, nstart = 25)
+
+select_features$cluster <- factor(km$cluster) 
+
+library(ggplot2)
+pcs <- prcomp(X)                     # PCA on the same scaled matrix
+pca_df <- data.frame(pcs$x[, 1:2],   # take PC1 & PC2
+                     cluster = select_features$cluster)
+
+ggplot(pca_df, aes(PC1, PC2, colour = cluster)) +
+  geom_point(size = 2) +
+  stat_ellipse(type = "norm", linetype = 2) +
+  labs(title = paste("k-means, k =", k, " — PCA projection"),
+       x = "PC1", y = "PC2") +
+  theme_minimal()
+```
 
 
 
@@ -1110,6 +3877,183 @@ ggplot(lymphocyte_features, aes(x = .data[[distance_var]])) +
     hjust = 1.1, vjust = 1.1,
     size = 3, family = "Arial"
   )
+
+```
+
+
+### Check correlations between features
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(broom)
+library(GGally)
+
+
+
+lymphocyte_features_all <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_batch_1.json"))
+
+
+lymphocyte_features <- lymphocyte_features_all %>%
+  select(image_name:mucosa_name, 
+         villi_epithelium_lymphocyte_count_per_1000_um2,
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_epithelium_lymphocyte_count_per_1000_um2,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_3,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2
+         
+         ) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+```
+
+### Check correlations between variables within each compartment
+
+```{r}
+library(tidyverse)
+library(GGally)
+library(plotly)
+
+explore_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/")
+
+scaled_df <- lymphocyte_features %>%
+  select(ends_with("_robust"))
+
+make_abbr <- function(nms) {
+  nms %>%
+    str_remove("_robust$") %>%                                   # drop suffix
+    str_replace("^villi_epithelium",         "vil_ep") %>%
+    str_replace("^crypts_epithelium",        "cry_ep") %>%
+    str_replace("^villi_lamina_propria",     "vil_lp") %>%
+    str_replace("^crypts_lamina_propria",    "cry_lp") %>%
+    str_replace("_lymphocyte_count_per_1000_um2$",             "Count")  %>%
+    str_replace("_lymphocytes_mean_log_closest_neighbor_um$",  "Dist-mean") %>%
+    str_replace("_lymphocytes_sd_log_closest_neighbor_um$",    "Dist-sd")   %>%
+    str_replace("_lymphocytes_pct_cluster_ge_3$",              "Cluster")  %>%
+    str_replace("_lymphocytes_mean_measured_area_um2$",        "Size-mean") %>%
+    str_replace("_lymphocytes_sd_measured_area_um2$",          "Size-sd")   %>%
+    str_replace("^(vil_ep|cry_ep|vil_lp|cry_lp)_(.*)$", "\\1\n\\2")
+}
+
+groups <- list(
+  vil_ep = "^villi_epithelium_.*_robust$",
+  vil_lp = "^villi_lamina_propria_.*_robust$",
+  cry_ep = "^crypts_epithelium_.*_robust$",
+  cry_lp = "^crypts_lamina_propria_.*_robust$"
+)
+
+walk(
+  names(groups),
+  \(g) {
+    df   <- lymphocyte_features %>% select(matches(groups[[g]]))
+    abbr <- make_abbr(names(df)) |>
+        stringr::str_remove("^(vil_ep|cry_ep|vil_lp|cry_lp)\\n?") 
+
+    p <- ggpairs(
+      df,
+      columnLabels = abbr,
+      lower = list(continuous = wrap("points", alpha = .5, size = .6)),
+      upper = list(continuous = wrap("cor", digits = 2, size = 3)),
+      diag  = list(continuous = "densityDiag")
+    ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 6)
+      )
+
+     ggsave(
+      filename = file.path(explore_features_dir, glue::glue("{g}_pair_matrix.png")),
+      plot     = p,
+      width    = 7, height = 7, units = "in", dpi = 300
+    )
+  }
+)
+
+```
+
+
+### Check correlation between compartments for each variable
+
+```{r}
+library(tidyverse)
+library(GGally)
+library(plotly)
+
+explore_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/")
+
+scaled_df <- lymphocyte_features %>%
+  select(ends_with("_robust"))
+
+make_abbr <- function(nms) {
+  nms %>%
+    str_remove("_robust$") %>%                                   # drop suffix
+    str_replace("^villi_epithelium",         "Villi-Epi") %>%
+    str_replace("^crypts_epithelium",        "Crypts-Epi") %>%
+    str_replace("^villi_lamina_propria",     "Villi-Lp") %>%
+    str_replace("^crypts_lamina_propria",    "Crypts-Lp") %>%
+    str_replace("_lymphocyte_count_per_1000_um2$",             " Count")  %>%
+    str_replace("_lymphocytes_mean_log_closest_neighbor_um$",  " Dist-mean") %>%
+    str_replace("_lymphocytes_sd_log_closest_neighbor_um$",    " Dist-sd")   %>%
+    str_replace("_lymphocytes_pct_cluster_ge_3$",              " Cluster")  %>%
+    str_replace("_lymphocytes_mean_measured_area_um2$",        " Size-mean") %>%
+    str_replace("_lymphocytes_sd_measured_area_um2$",          " Size-sd")  
+}
+
+groups <- list(
+  count      = "_lymphocyte_count_per_1000_um2_robust$",              # …Count
+  dist_mean  = "_lymphocytes_mean_log_closest_neighbor_um_robust$",   # …Dist-mean
+  dist_sd    = "_lymphocytes_sd_log_closest_neighbor_um_robust$",     # …Dist-sd
+  clust      = "_lymphocytes_pct_cluster_ge_3_robust$",               # …Cluster
+  size_mean  = "_lymphocytes_mean_measured_area_um2_robust$",         # …Size-mean
+  size_sd    = "_lymphocytes_sd_measured_area_um2_robust$"            # …Size-sd
+)
+
+walk(
+  names(groups),
+  \(g) {
+    df   <- lymphocyte_features %>% select(matches(groups[[g]]))
+    abbr <- make_abbr(names(df)) 
+    p <- ggpairs(
+      df,
+      columnLabels = abbr,
+      lower = list(continuous = wrap("points", alpha = .5, size = .6)),
+      upper = list(continuous = wrap("cor", digits = 2, size = 3)),
+      diag  = list(continuous = "densityDiag")
+    ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 6)
+      )
+
+     ggsave(
+      filename = file.path(explore_features_dir, glue::glue("{g}_pair_matrix.png")),
+      plot     = p,
+      width    = 7, height = 7, units = "in", dpi = 300
+    )
+  }
+)
 
 ```
 

@@ -74,7 +74,7 @@ print(total_n)
 ```
 
 ### Random sample from all scanned images
-Sample 100 images (not more than one per bx_id and vmacs_patient_id)
+Sample 105 images (not more than one per bx_id and vmacs_patient_id)
 Exclude any images used for training/tuning of models used in the paper, only use H&E stained. 
 Sample size calculation 89, (estimate 85% retainment after excluding low quality slides (estimated in labl_2020_tuning set - 105 wsis for this should account for it)
 ```{r sample}

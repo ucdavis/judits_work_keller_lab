@@ -1,0 +1,291 @@
+---
+title: "path_vs_ai_anovas"
+author: "Wulcan"
+date: "2025-07-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+Calculate correlations between pathologists (majority) grades and ai-derived quantiative features
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(ggpubr)
+
+ai_features <- fromJSON(paste0(parsed_features_dir, "original_features_b0.json")) %>%
+  mutate(image_fragment_mucosa_name = paste(image_name, fragment_name, mucosa_name, sep = "_")) %>%
+  select(image_fragment_mucosa_name, 
+         villi_epithelium_lymphocyte_count_per_1000_um2:crypts_lamina_propria_lymphocytes_median_log_closest_junction_um)
+
+majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/pathologists_reproducibility/majority_grades.json") 
+
+combined <- majority_grades%>%
+  rename(image_fragment_mucosa_name = name) %>%
+  left_join(ai_features) 
+
+distribution_features <- combined %>%
+  select(
+   - lymphocyte_size,
+   - lymphocyte_homogeneity,
+   - villi_epithelium_lymphocytes_mean_measured_area_um2,
+   - villi_epithelium_lymphocytes_sd_measured_area_um2,
+   - crypts_epithelium_lymphocytes_mean_measured_area_um2,
+   - crypts_epithelium_lymphocytes_sd_measured_area_um2,
+   - villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+   - villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+   - crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+   - crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
+   - villi_epithelium_lamina_propria_ratio
+   - crypts_epithelium_lamina_propria_ratio)  %>%
+  pivot_longer(
+    cols = matches("^(villi|crypts)_"),
+    names_to = c("layer", "compartment", "feature"),
+    names_pattern = "^(villi|crypts)_(epithelium|lamina_propria)_(.*)$",
+    values_to = "value"
+  ) %>%
+   mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
+  mutate(feature = str_remove(feature, "^lymphocyte_")) %>%
+  mutate(feature = ifelse(feature == "junctiona_gradient", "junctional_gradient", feature))
+  
+
+morphology_features <- combined %>%
+  select(
+   lymphocyte_size,
+   lymphocyte_homogeneity,
+   villi_epithelium_lymphocytes_mean_measured_area_um2,
+   villi_epithelium_lymphocytes_sd_measured_area_um2,
+   crypts_epithelium_lymphocytes_mean_measured_area_um2,
+   crypts_epithelium_lymphocytes_sd_measured_area_um2,
+   villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+   villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+   crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+   crypts_lamina_propria_lymphocytes_sd_measured_area_um2) 
+```
+
+#Insights
+- Counts correlated better with cellularity than distance to closest neigbor
+- Sd Distance to closest neighbor correlated better with clustering then Mean Distance to closest neighbor that c=correlated better with clustering then pct_lymphocytes in clusters
+- junctional gradient did NOT correlate with disttance to closest junction (too few and too noisy)
+- patchy_infiltration lamina propria did not correlate with anything
+- not much correlated in crypt epithelium (but likely too little going on to be measurable)
+- patchyness and junctional gradeines had some sig values here and there but likely spurious 
+
+Keep: Count for cellularity, mean and sd distance to closest neighbor for clustering
+Drop: " Pct lymphocytes in clusters, lymphocyte_mean_measured_area_um2 and lymphocyte_homogeneity_um2
+
+```{r}
+
+epithelium_comparisons <- tribble(
+  ~x, ~y,
+  "cellularity", "count_per_1000_um2",
+  "cellularity", "mean_log_closest_neighbor_um",
+  "clustering", "mean_log_closest_neighbor_um",
+  "clustering", "sd_log_closest_neighbor_um",
+  "clustering", "pct_cluster_ge_3",
+  "junctional_gradient", "median_log_closest_junction_um")
+
+lamina_propria_comparisons <- tribble(
+  ~x, ~y,
+  "cellularity", "count_per_1000_um2",
+  "cellularity", "mean_log_closest_neighbor_um",
+  "patchy_infiltration", "mean_log_closest_neighbor_um",
+  "patchy_infiltration", "sd_log_closest_neighbor_um",
+  "junctional_gradient", "median_log_closest_junction_um")
+
+
+#— 2. Pivot back to wide:
+wide_df <- distribution_features %>%
+  pivot_wider(
+    names_from  = feature,
+    values_from = value
+  )
+
+#— 3. A helper to run a single set of ANOVAs & plots for one compartment:
+run_comparisons <- function(df, comps, layer_name, comp_name) {
+  comps %>% pwalk(function(x, y) {
+    df_sub <- df %>% 
+      filter(!is.na(.data[[x]]), !is.na(.data[[y]]))
+    
+    # 3a. ANOVA
+    cat("\n--", toupper(layer_name), "/", comp_name, "ANOVA:", x, "vs", y, "--\n")
+    print(summary(aov(as.formula(paste(y, "~ factor(", x, ")")), data = df_sub)))
+    
+    # 3b. Boxplot with stars
+    top <- max(df_sub[[y]], na.rm = TRUE) * 1.05
+    p <- ggplot(df_sub, aes_string(x = paste0("factor(", x, ")"), y = y)) +
+      geom_boxplot() +
+      stat_compare_means(
+        method  = "anova",
+        label   = "p.signif",
+        label.y = top
+      ) +
+      labs(
+        title = paste(layer_name, comp_name, ":", x, "vs", y),
+        x     = x,
+        y     = y
+      ) +
+      theme_minimal()
+    
+    print(p)
+  })
+}
+
+#— 4. Loop over each layer:
+for (layer_name in unique(wide_df$layer)) {
+  df_layer <- wide_df %>% filter(layer == layer_name)
+  
+  # epithelium
+  df_epi <- df_layer %>% filter(compartment == "epithelium")
+  run_comparisons(df_epi, epithelium_comparisons, layer_name, "epithelium")
+  
+  # lamina_propria
+  df_lp <- df_layer %>% filter(compartment == "lamina_propria")
+  run_comparisons(df_lp, lamina_propria_comparisons, layer_name, "lamina_propria")
+}
+
+
+```
+
+```{r}
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(ggpubr)
+
+# 1. Pull out just the comparisons we want
+means  <- c(
+  "villi_epithelium_lymphocytes_mean_measured_area_um2",
+  "crypts_epithelium_lymphocytes_mean_measured_area_um2",
+  "villi_lamina_propria_lymphocytes_mean_measured_area_um2",
+  "crypts_lamina_propria_lymphocytes_mean_measured_area_um2"
+)
+
+sds    <- c(
+  "villi_epithelium_lymphocytes_sd_measured_area_um2",
+  "crypts_epithelium_lymphocytes_sd_measured_area_um2",
+  "villi_lamina_propria_lymphocytes_sd_measured_area_um2",
+  "crypts_lamina_propria_lymphocytes_sd_measured_area_um2"
+)
+
+# 2. A helper to run one ANOVA + boxplot
+run_test <- function(df, x_var, y_var, method = "anova") {
+  df2 <- df %>% filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]]))
+  
+  # ANOVA
+  cat("\n**Testing**", y_var, "~", x_var, "\n")
+  model <- aov(as.formula(paste(y_var, "~ factor(", x_var, ")")), data = df2)
+  print(summary(model))
+  
+  # Boxplot with stars
+  top <- max(df2[[y_var]], na.rm = TRUE) * 1.05
+  p <- ggplot(df2, aes_string(x = paste0("factor(", x_var, ")"), y = y_var)) +
+    geom_boxplot() +
+    stat_compare_means(
+      method  = method,
+      label   = "p.signif",
+      label.y = top
+    ) +
+    labs(
+      title = paste0(x_var, " vs. ", y_var),
+      x     = x_var,
+      y     = y_var
+    ) +
+    theme_minimal()
+  
+  print(p)
+}
+
+# 3. Run means ~ size
+walk(means, function(me) {
+  run_test(morphology_features, "lymphocyte_size", me, method = "anova")
+})
+
+# 4. Run sds ~ homogeneity
+walk(sds, function(sd) {
+  run_test(morphology_features, "lymphocyte_homogeneity", sd, method = "anova")
+})
+
+```
+
+```{r}
+
+morphology_comparisons <- tribble(
+   ~x, ~y,
+   "lymphocyte_size" , "villi_epithelium_lymphocytes_mean_measured_area_um2" ,
+   "lymphocyte_size" , "crypts_epithelium_lymphocytes_mean_measured_area_um2" ,
+   "lymphocyte_size", "villi_lamina_propria_lymphocytes_mean_measured_area_um2" ,
+   "lymphocyte_size", "crypts_lamina_propria_lymphocytes_mean_measured_area_um2",
+   "lymphocyte_homogeneity", "villi_epithelium_lymphocytes_sd_measured_area_um2",
+    "lymphocyte_homogeneity", "crypts_epithelium_lymphocytes_sd_measured_area_um2" ,
+    "lymphocyte_homogeneity","villi_lamina_propria_lymphocytes_sd_measured_area_um2",
+   "lymphocyte_homogeneity", "crypts_lamina_propria_lymphocytes_sd_measured_area_um2")
+
+
+
+# 1. Define every comparison as a two-column tibble
+comparisons <- tribble(
+  ~x,                                                            ~y,
+  "villi_epithelium_lymphocytes_cellularity",                    "villi_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  "villi_epithelium_lymphocytes_clustering",                     "villi_epithelium_lymphocytes_pct_cluster_ge_3",
+  "villi_epithelium_lymphocytes_clustering",                     "villi_epithelium_lymphocytes_sd_log_closest_neighbor_um",
+  "villi_epithelium_lymphocytes_junctional_gradient",            "villi_epithelium_lymphocytes_median_log_closest_junction_um",
+  "villi_lamina_propria_lymphocytes_cellularity",                "villi_lamina_propria_lymphocyte_count_per_1000_um2",
+  "villi_lamina_propria_lymphocytes_cellularity",                "villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  "villi_lamina_propria_lymphocytes_patchy_infiltration",        "villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  "villi_lamina_propria_lymphocytes_junctiona_gradient",         "villi_lamina_propria_lymphocytes_median_log_closest_junction_um",
+  "crypts_epithelium_lymphocytes_cellularity",                   "crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um",
+  "crypts_epithelium_lymphocytes_clustering",                    "crypts_epithelium_lymphocytes_pct_cluster_ge_3",
+  "crypts_epithelium_lymphocytes_clustering",                    "crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um",
+  "crypts_epithelium_lymphocytes_junctional_gradient",           "crypts_epithelium_lymphocytes_median_log_closest_junction_um",
+  "crypts_lamina_propria_lymphocytes_cellularity",               "crypts_lamina_propria_lymphocyte_count_per_1000_um2",
+  "crypts_lamina_propria_lymphocytes_cellularity",               "crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
+  "crypts_lamina_propria_lymphocytes_patchy_infiltration",       "crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
+  "crypts_lamina_propria_lymphocytes_junctional_gradient",       "crypts_lamina_propria_lymphocytes_median_log_closest_junction_um",
+  "lymphocyte_size",                                             "villi_epithelium_lymphocytes_mean_measured_area_um2",
+  "lymphocyte_size",                                             "crypts_epithelium_lymphocytes_mean_measured_area_um2",
+  "lymphocyte_size",                                             "villi_lamina_propria_lymphocytes_mean_measured_area_um2",
+  "lymphocyte_size",                                             "crypts_lamina_propria_lymphocytes_mean_measured_area_um2",
+  "lymphocyte_homogeneity",                                      "villi_epithelium_lymphocytes_sd_measured_area_um2",
+  "lymphocyte_homogeneity",                                      "crypts_epithelium_lymphocytes_sd_measured_area_um2",
+  "lymphocyte_homogeneity",                                      "villi_lamina_propria_lymphocytes_sd_measured_area_um2",
+  "lymphocyte_homogeneity",                                      "crypts_lamina_propria_lymphocytes_sd_measured_area_um2"
+)
+
+# 2. Loop through each row, run ANOVA, and plot
+comparisons %>% 
+  pwalk(function(x, y) {
+    # subset & drop NAs
+    df <- combined %>% 
+      filter(!is.na(.data[[x]]), !is.na(.data[[y]]))
+    
+    cat("\n\n>>> ANOVA for", y, "by", x, ":\n")
+    model <- aov(as.formula(paste(y, "~ factor(", x, ")")), data = df)
+    print(summary(model))
+    
+    # determine where to put the stars
+    top <- max(df[[y]], na.rm = TRUE) * 1.05
+    
+    # boxplot with stars
+    p <- ggplot(df, aes_string(x = paste0("factor(", x, ")"), y = y)) +
+      geom_boxplot() +
+      stat_compare_means(
+        method    = "anova", 
+        label     = "p.signif", 
+        label.y   = top
+      ) +
+      labs(
+        x = x, 
+        y = y,
+        title = paste("ANOVA p-stars for", y, "∼", x)
+      ) +
+      theme_minimal()
+    
+    print(p)
+  })
+
+```

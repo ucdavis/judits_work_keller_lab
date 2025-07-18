@@ -1,0 +1,401 @@
+---
+title: "parse_lymphocyte_features"
+author: "Wulcan"
+date: "2025-07-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+Parse features identified in "explore_lymphocyte_features" for further processing
+
+
+
+```{r}
+
+library(jsonlite)
+library(tidyverse)
+
+parsed_features_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_lymphocyte_features/"
+
+lymphocyte_features_b0 <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_grading_sample.json")
+
+#lymphocyte_features_b1 <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_batch_1.json")
+
+selected_features <- lymphocyte_features_b0 %>%
+  select(image_name:mucosa_name, 
+          villi_epithelium_lymphocyte_count_per_1000_um2,
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_epithelium_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lymphocyte_count_per_1000_um2,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_3,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_epithelium_lymphocytes_median_log_closest_junction_um,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         villi_epithelium_lamina_propria_ratio,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lamina_propria_ratio) %>%
+  mutate(across(
+    where(is.numeric),
+    ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE),
+    .names = "{.col}_robust"
+  ))
+
+original_features <- selected_features %>%
+    select(image_name:mucosa_name, 
+          villi_epithelium_lymphocyte_count_per_1000_um2,
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_epithelium_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lymphocyte_count_per_1000_um2,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_3,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_epithelium_lymphocytes_median_log_closest_junction_um,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         villi_epithelium_lamina_propria_ratio,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lamina_propria_ratio)
+
+robust_features <- selected_features %>%
+  select(image_name:mucosa_name, 
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+         villi_epithelium_lymphocytes_mean_measured_area_um2_robust,
+         villi_epithelium_lymphocytes_sd_measured_area_um2_robust,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2_robust,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2_robust,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2_robust,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2_robust,
+         villi_epithelium_lamina_propria_ratio_robust,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um_robust,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2_robust,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2_robust,
+         crypts_epithelium_lamina_propria_ratio)
+
+write_json(original_features, paste0(parsed_features_dir, "original_features_b0.json"), pretty = TRUE)
+```
+
+### Tried to cluster on epi villi only
+The low density ones are 1, 4 and 7. 1 and 4 are almost exclusively not si mucosa. Only a single with very low lc are there, 
+Then comes 3 and 8 - 
+In cluster 1 everything but 1 (with very low lc numbers) is junk (not si)
+Cluster 2 has a lot of ie lympgocytes often clustered
+Cluster 3 has pretty mid single lc but there are some with low but fp epi and some with a bit higher but fn lc
+Cluster 4 is tiny - just two mucosa from one wsi - both are no si from a serosal lymphoma
+Cl 5 is pretty big -high ie lc but mostly singles, also definitley contains some with FP epithelials
+Cl 6 is pretty scattered, but larger lc? also lenty fp epi
+
+
+```{r}
+library(cluster)
+library(factoextra)
+
+
+villi_epithelium <- robust_features %>% 
+  select(image_name:mucosa_name, 
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+         villi_epithelium_lymphocytes_mean_measured_area_um2_robust,
+         villi_epithelium_lymphocytes_sd_measured_area_um2_robust) %>%
+  rename(`Dist-mean` = villi_epithelium_lymphocytes_mean_log_closest_neighbor_um_robust,
+         `Dist-sd` = villi_epithelium_lymphocytes_sd_log_closest_neighbor_um_robust,
+         `Clustered` = villi_epithelium_lymphocytes_pct_cluster_ge_3_robust,
+         `Size-mean` = villi_epithelium_lymphocytes_mean_measured_area_um2_robust,
+         `Size-sd` = villi_epithelium_lymphocytes_sd_measured_area_um2_robust)
+
+id_cols     <- c("image_name", "fragment_name", "mucosa_name")   # keep, don’t cluster
+
+cluster_vars <- c("Dist-mean",
+         "Dist-sd",
+         "Clustered",
+         "Size-mean",
+         "Size-sd")
+
+to_cluster <- villi_epithelium %>%
+  select(all_of(cluster_vars)) %>%
+  drop_na() 
+
+id_df <- villi_epithelium  %>%
+  select(all_of(id_cols)) %>%
+  slice(match(rownames(to_cluster), rownames(villi_epithelium )))
+
+#pick k - elbow
+fviz_nbclust(to_cluster, kmeans, method = "wss", k.max = 10) +
+  labs(title = "Elbow method (already scaled)")
+
+#pick k silhoette
+fviz_nbclust(to_cluster, kmeans, method = "silhouette", k.max = 10) +
+  labs(title = "Silhouette method")
+
+best_k <- 8
+
+km <- kmeans(to_cluster, centers = best_k, nstart = 25)
+
+villi_epithelium_clustered <- bind_cols(
+  id_df,
+  to_cluster,
+  cluster = factor(km$cluster)
+)
+
+
+# -------------------------------------------------
+# 6.  Principal-component analysis (PCA) & visuals
+# -------------------------------------------------
+
+# 6a.  Run PCA  ────────────────────────────────────
+# If the five features are NOT already scaled to the same unit/variance,
+# keep scale.=TRUE, center=TRUE.  Otherwise set both to FALSE.
+pca_res <- prcomp(to_cluster,
+                  center = TRUE,
+                  scale.  = TRUE)
+
+# 6b.  Scree plot – how many PCs matter? ----------
+fviz_eig(pca_res, addlabels = TRUE) +         # % variance per PC
+  labs(title = "Scree plot (PCA on villus-epithelium features)")
+
+# 6c.  Individuals (points) coloured by k-means cluster -----------
+fviz_pca_ind(
+  pca_res,
+  geom.ind      = "point",
+  pointshape    = 21,
+  fill.ind      = factor(km$cluster),  # colour by cluster
+  col.ind       = "black",
+  palette       = "Dark2",
+  addEllipses   = TRUE,
+  ellipse.level = 0.90,
+  repel         = TRUE,                # avoids text overlap
+  legend.title  = "Cluster"
+) +
+  labs(title = paste0("PCA of lymphocyte features (k = ", best_k, ")"))
+
+# 6d.  Variable contribution (optional) ----------
+fviz_pca_var(pca_res,
+             col.var = "contrib",     # colour by contribution
+             gradient.cols = c("#99c1de", "#166ba9", "#08306b"),
+             repel = TRUE) +
+  labs(title = "Variable loadings on the first two PCs")
+
+
+```
+
+### Tried to cluster on lp villi only
+
+Cluster 1 is all junk - low count, high dist
+Cluster 2 is low cellularity, alot of junk, one with high cellularity LCL but terrible recognition (lp/epi would help - 15B3219_T1T2)
+Cluster 3 is high cellularity - definitely some variability
+Cluster 4 is low but patchy
+Cluster 5 is stabley low
+
+```{r}
+library(cluster)
+library(factoextra)
+
+
+villi_lp <- robust_features %>% 
+  select(image_name:mucosa_name, 
+         villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust) %>%
+  rename(`Dist-mean` = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+         Count = villi_lamina_propria_lymphocyte_count_per_1000_um2_robust) %>%
+  mutate(image_fragment_name = paste(image_name, fragment_name, mucosa_name, sep = "_"))
+
+rownames(villi_lp) <- villi_lp$image_fragment_name
+
+villi_lp <- villi_lp %>% select(`Dist-mean`, Count)  %>%
+  drop_na() 
+
+
+#pick k - elbow
+fviz_nbclust(villi_lp, kmeans, method = "wss", k.max = 10) +
+  labs(title = "Elbow method (already scaled)")
+
+#pick k silhoette
+fviz_nbclust(villi_lp, kmeans, method = "silhouette", k.max = 10) +
+  labs(title = "Silhouette method")
+
+
+best_k <- 5
+
+km <- kmeans(to_cluster, centers = best_k, nstart = 25)
+
+villi_lp_clustered <- bind_cols(
+  villi_lp,
+  cluster = factor(km$cluster)
+)
+
+
+# -------------------------------------------------
+# 6.  Principal-component analysis (PCA) & visuals
+# -------------------------------------------------
+
+# 6a.  Run PCA  ────────────────────────────────────
+# If the five features are NOT already scaled to the same unit/variance,
+# keep scale.=TRUE, center=TRUE.  Otherwise set both to FALSE.
+pca_res <- prcomp(villi_lp,
+                  center = TRUE,
+                  scale.  = TRUE)
+
+# 6b.  Scree plot – how many PCs matter? ----------
+fviz_eig(pca_res, addlabels = TRUE) +         # % variance per PC
+  labs(title = "Scree plot (PCA on villus-epithelium features)")
+
+# 6c.  Individuals (points) coloured by k-means cluster -----------
+fviz_pca_ind(
+  pca_res,
+  geom.ind      = "point",
+  pointshape    = 21,
+  fill.ind      = factor(km$cluster),  # colour by cluster
+  col.ind       = "black",
+  palette       = "Dark2",
+  addEllipses   = TRUE,
+  ellipse.level = 0.90,
+  repel         = TRUE,                # avoids text overlap
+  legend.title  = "Cluster"
+) +
+  labs(title = paste0("PCA of lymphocyte features (k = ", best_k, ")"))
+
+# 6d.  Variable contribution (optional) ----------
+fviz_pca_var(pca_res,
+             col.var = "contrib",     # colour by contribution
+             gradient.cols = c("#99c1de", "#166ba9", "#08306b"),
+             repel = TRUE) +
+  labs(title = "Variable loadings on the first two PCs")
+
+
+```
+### Added lp/epi ratio to lp villi only
+#1 is low lc, variable epi/lp
+#2 is low low
+# is high high
+
+```{r}
+library(cluster)
+library(factoextra)
+
+
+villi_lp <- robust_features %>% 
+  select(image_name:mucosa_name, 
+         villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust, 
+         villi_epithelium_lamina_propria_ratio_robust) %>%
+  rename(`Dist-mean` = villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um_robust,
+         Count = villi_lamina_propria_lymphocyte_count_per_1000_um2_robust,
+         `Epi/Lp` = villi_epithelium_lamina_propria_ratio_robust) %>%
+  mutate(image_fragment_name = paste(image_name, fragment_name, mucosa_name, sep = "_"))
+
+rownames(villi_lp) <- villi_lp$image_fragment_name
+
+villi_lp <- villi_lp %>% select(`Dist-mean`, Count, `Epi/Lp`)  %>%
+  drop_na() 
+
+
+#pick k - elbow
+fviz_nbclust(villi_lp, kmeans, method = "wss", k.max = 10) +
+  labs(title = "Elbow method (already scaled)")
+
+#pick k silhoette
+fviz_nbclust(villi_lp, kmeans, method = "silhouette", k.max = 10) +
+  labs(title = "Silhouette method")
+
+
+best_k <- 3
+
+km <- kmeans(to_cluster, centers = best_k, nstart = 25)
+
+villi_lp_clustered <- bind_cols(
+  villi_lp,
+  cluster = factor(km$cluster)
+)
+
+
+# -------------------------------------------------
+# 6.  Principal-component analysis (PCA) & visuals
+# -------------------------------------------------
+
+# 6a.  Run PCA  ────────────────────────────────────
+# If the five features are NOT already scaled to the same unit/variance,
+# keep scale.=TRUE, center=TRUE.  Otherwise set both to FALSE.
+pca_res <- prcomp(villi_lp,
+                  center = TRUE,
+                  scale.  = TRUE)
+
+# 6b.  Scree plot – how many PCs matter? ----------
+fviz_eig(pca_res, addlabels = TRUE) +         # % variance per PC
+  labs(title = "Scree plot (PCA on villus-epithelium features)")
+
+# 6c.  Individuals (points) coloured by k-means cluster -----------
+fviz_pca_ind(
+  pca_res,
+  geom.ind      = "point",
+  pointshape    = 21,
+  fill.ind      = factor(km$cluster),  # colour by cluster
+  col.ind       = "black",
+  palette       = "Dark2",
+  addEllipses   = TRUE,
+  ellipse.level = 0.90,
+  repel         = TRUE,                # avoids text overlap
+  legend.title  = "Cluster"
+) +
+  labs(title = paste0("PCA of lymphocyte features (k = ", best_k, ")"))
+
+# 6d.  Variable contribution (optional) ----------
+fviz_pca_var(pca_res,
+             col.var = "contrib",     # colour by contribution
+             gradient.cols = c("#99c1de", "#166ba9", "#08306b"),
+             repel = TRUE) +
+  labs(title = "Variable loadings on the first two PCs")
+
+
+```
+
+
+
+
+
+
