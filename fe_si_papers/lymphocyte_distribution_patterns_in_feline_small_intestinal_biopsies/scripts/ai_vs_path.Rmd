@@ -12,280 +12,821 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Objective
 Calculate correlations between pathologists (majority) grades and ai-derived quantiative features
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
 library(jsonlite)
 library(tidyverse)
-library(ggpubr)
+library(lmtest)
+library(gridExtra)
+library(writexl)
+options(scipen = 999)
 
-ai_features <- fromJSON(paste0(parsed_features_dir, "original_features_b0.json")) %>%
-  mutate(image_fragment_mucosa_name = paste(image_name, fragment_name, mucosa_name, sep = "_")) %>%
-  select(image_fragment_mucosa_name, 
-         villi_epithelium_lymphocyte_count_per_1000_um2:crypts_lamina_propria_lymphocytes_median_log_closest_junction_um)
+to_box <- "~/Library/CloudStorage/Box-Box/"
 
-majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/pathologists_reproducibility/majority_grades.json") 
+parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_ai_features/")
 
-combined <- majority_grades%>%
-  rename(image_fragment_mucosa_name = name) %>%
-  left_join(ai_features) 
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/ai_vs_path/"
 
-distribution_features <- combined %>%
-  select(
-   - lymphocyte_size,
-   - lymphocyte_homogeneity,
-   - villi_epithelium_lymphocytes_mean_measured_area_um2,
-   - villi_epithelium_lymphocytes_sd_measured_area_um2,
-   - crypts_epithelium_lymphocytes_mean_measured_area_um2,
-   - crypts_epithelium_lymphocytes_sd_measured_area_um2,
-   - villi_lamina_propria_lymphocytes_mean_measured_area_um2,
-   - villi_lamina_propria_lymphocytes_sd_measured_area_um2,
-   - crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
-   - crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
-   - villi_epithelium_lamina_propria_ratio
-   - crypts_epithelium_lamina_propria_ratio)  %>%
-  pivot_longer(
-    cols = matches("^(villi|crypts)_"),
-    names_to = c("layer", "compartment", "feature"),
-    names_pattern = "^(villi|crypts)_(epithelium|lamina_propria)_(.*)$",
-    values_to = "value"
-  ) %>%
-   mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
-  mutate(feature = str_remove(feature, "^lymphocyte_")) %>%
-  mutate(feature = ifelse(feature == "junctiona_gradient", "junctional_gradient", feature))
+plot_box_compartments <- function(df, path_feature, ai_feature) {
+  
+  df <- df %>%
+    filter(!is.na(path_value), !is.na(ai_value))
+    
+  x_labels <- if (path_feature == "Cellularity" | path_feature == "Cellularity (lamina propria)") {
+    c("0" = "Normal", "1" = "Mild", "2"= "Moderate", "3" = "Marked")
+  } else {
+    c("0" = "Absent", "1" = "Present")
+  }
+  
+  df <- df %>%
+    filter(!is.na(path_value), !is.na(ai_value)) %>%
+    mutate(
+      layer = factor(layer, levels = c("Villi", "Crypts")),
+      compartment = factor(compartment, levels = c("Lamina propria", "Epithelium")),
+      path_value = factor(path_value, levels = names(x_labels)))
+    
+  ggplot(df, aes(x = factor(path_value), y = ai_value)) +
+    geom_boxplot(aes(group = cut_width(path_value, 0.2))) +
+    facet_grid(compartment ~ layer) +
+    labs(
+      title = paste(path_feature, "vs", ai_feature),
+      x = path_feature,
+      y = ai_feature
+    ) +
+    scale_x_discrete(labels = x_labels) +
+    theme_bw(base_size = 9, base_family = "Arial") +  # Set size and font
+    theme(
+      strip.text = element_text(size = 9),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9),
+      plot.title = element_text(size = 9, face = "bold"),
+      legend.text = element_text(size = 9),
+      legend.title = element_text(size = 9)
+    ) 
+}
+
+
+plot_box_layers <- function(df, path_feature, ai_feature) {
+  
+   df <- df %>%
+    filter(!is.na(path_value), !is.na(ai_value))
+    
+  x_labels <- if (path_feature == "Cellularity" | path_feature == "Cellularity (lamina propria)")  {
+    c("0" = "Normal", "1" = "Mild", "2" = "Moderate", "3" = "Marked")
+  } else {
+    c("0" = "Absent", "1" = "Present")
+  }
+  
+  df <- df %>%
+    filter(!is.na(path_value), !is.na(ai_value)) %>%
+    mutate(
+      path_value = as.character(path_value),  # avoid factor-to-NA conversion
+      path_value = factor(path_value, levels = names(x_labels)),
+      layer = factor(layer, levels = c("Villi", "Crypts"))
+    )
+  
+    ai_feature_wrapped <- if (nchar(ai_feature) > 20) {
+    if (grepl("\\(", ai_feature)) {
+      sub("\\(", "\n(", ai_feature)
+    } else if (grepl("-", ai_feature)) {
+      sub("-", "\n-", ai_feature)
+    } else {
+      ai_feature  # don't modify if no good split point
+    }
+  } else {
+    ai_feature  # don't modify if short
+  }
+
   
 
-morphology_features <- combined %>%
-  select(
-   lymphocyte_size,
-   lymphocyte_homogeneity,
-   villi_epithelium_lymphocytes_mean_measured_area_um2,
-   villi_epithelium_lymphocytes_sd_measured_area_um2,
-   crypts_epithelium_lymphocytes_mean_measured_area_um2,
-   crypts_epithelium_lymphocytes_sd_measured_area_um2,
-   villi_lamina_propria_lymphocytes_mean_measured_area_um2,
-   villi_lamina_propria_lymphocytes_sd_measured_area_um2,
-   crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
-   crypts_lamina_propria_lymphocytes_sd_measured_area_um2) 
+  ggplot(df, aes(x = factor(path_value), y = ai_value)) +
+    geom_boxplot(aes(group = cut_width(path_value, 0.2))) +
+    facet_wrap(~ layer) +
+    scale_x_discrete(labels = x_labels) +
+    labs(
+      title = paste(path_feature, "vs", ai_feature),
+      x = path_feature,
+      y = ai_feature_wrapped) +
+    theme_bw(base_size = 9, base_family = "Arial") +  # Set size and font
+    theme(
+      strip.text = element_text(size = 9),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9),
+      plot.title = element_text(size = 9, face = "bold"),
+      legend.text = element_text(size = 9),
+      legend.title = element_text(size = 9)
+    )
+}
+
+
+
 ```
 
-#Insights
-- Counts correlated better with cellularity than distance to closest neigbor
-- Sd Distance to closest neighbor correlated better with clustering then Mean Distance to closest neighbor that c=correlated better with clustering then pct_lymphocytes in clusters
-- junctional gradient did NOT correlate with disttance to closest junction (too few and too noisy)
-- patchy_infiltration lamina propria did not correlate with anything
-- not much correlated in crypt epithelium (but likely too little going on to be measurable)
-- patchyness and junctional gradeines had some sig values here and there but likely spurious 
-
-Keep: Count for cellularity, mean and sd distance to closest neighbor for clustering
-Drop: " Pct lymphocytes in clusters, lymphocyte_mean_measured_area_um2 and lymphocyte_homogeneity_um2
-
-```{r}
-
-epithelium_comparisons <- tribble(
-  ~x, ~y,
-  "cellularity", "count_per_1000_um2",
-  "cellularity", "mean_log_closest_neighbor_um",
-  "clustering", "mean_log_closest_neighbor_um",
-  "clustering", "sd_log_closest_neighbor_um",
-  "clustering", "pct_cluster_ge_3",
-  "junctional_gradient", "median_log_closest_junction_um")
-
-lamina_propria_comparisons <- tribble(
-  ~x, ~y,
-  "cellularity", "count_per_1000_um2",
-  "cellularity", "mean_log_closest_neighbor_um",
-  "patchy_infiltration", "mean_log_closest_neighbor_um",
-  "patchy_infiltration", "sd_log_closest_neighbor_um",
-  "junctional_gradient", "median_log_closest_junction_um")
-
-
-#— 2. Pivot back to wide:
-wide_df <- distribution_features %>%
-  pivot_wider(
-    names_from  = feature,
-    values_from = value
+### Process features to be compared by compartment and layer
+compartment_correlations  <- compartment_correlations %>%
+  mutate(
+    p_value_report = case_when(
+      is.na(p_value) ~ NA_character_,
+      p_value < 0.0001 ~ "p < 0.0001",
+      p_value < 0.001 ~ "p < 0.001",
+      TRUE ~ paste0("p = ", format(round(p_value, 3), nsmall = 3))
+    )
   )
 
-#— 3. A helper to run a single set of ANOVAs & plots for one compartment:
-run_comparisons <- function(df, comps, layer_name, comp_name) {
-  comps %>% pwalk(function(x, y) {
-    df_sub <- df %>% 
-      filter(!is.na(.data[[x]]), !is.na(.data[[y]]))
-    
-    # 3a. ANOVA
-    cat("\n--", toupper(layer_name), "/", comp_name, "ANOVA:", x, "vs", y, "--\n")
-    print(summary(aov(as.formula(paste(y, "~ factor(", x, ")")), data = df_sub)))
-    
-    # 3b. Boxplot with stars
-    top <- max(df_sub[[y]], na.rm = TRUE) * 1.05
-    p <- ggplot(df_sub, aes_string(x = paste0("factor(", x, ")"), y = y)) +
-      geom_boxplot() +
-      stat_compare_means(
-        method  = "anova",
-        label   = "p.signif",
-        label.y = top
-      ) +
-      labs(
-        title = paste(layer_name, comp_name, ":", x, "vs", y),
-        x     = x,
-        y     = y
-      ) +
-      theme_minimal()
-    
-    print(p)
-  })
-}
-
-#— 4. Loop over each layer:
-for (layer_name in unique(wide_df$layer)) {
-  df_layer <- wide_df %>% filter(layer == layer_name)
-  
-  # epithelium
-  df_epi <- df_layer %>% filter(compartment == "epithelium")
-  run_comparisons(df_epi, epithelium_comparisons, layer_name, "epithelium")
-  
-  # lamina_propria
-  df_lp <- df_layer %>% filter(compartment == "lamina_propria")
-  run_comparisons(df_lp, lamina_propria_comparisons, layer_name, "lamina_propria")
-}
-
-
-```
-
-```{r}
-library(dplyr)
-library(purrr)
-library(ggplot2)
-library(ggpubr)
-
-# 1. Pull out just the comparisons we want
-means  <- c(
-  "villi_epithelium_lymphocytes_mean_measured_area_um2",
-  "crypts_epithelium_lymphocytes_mean_measured_area_um2",
-  "villi_lamina_propria_lymphocytes_mean_measured_area_um2",
-  "crypts_lamina_propria_lymphocytes_mean_measured_area_um2"
-)
-
-sds    <- c(
-  "villi_epithelium_lymphocytes_sd_measured_area_um2",
-  "crypts_epithelium_lymphocytes_sd_measured_area_um2",
-  "villi_lamina_propria_lymphocytes_sd_measured_area_um2",
-  "crypts_lamina_propria_lymphocytes_sd_measured_area_um2"
-)
-
-# 2. A helper to run one ANOVA + boxplot
-run_test <- function(df, x_var, y_var, method = "anova") {
-  df2 <- df %>% filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]]))
-  
-  # ANOVA
-  cat("\n**Testing**", y_var, "~", x_var, "\n")
-  model <- aov(as.formula(paste(y_var, "~ factor(", x_var, ")")), data = df2)
-  print(summary(model))
-  
-  # Boxplot with stars
-  top <- max(df2[[y_var]], na.rm = TRUE) * 1.05
-  p <- ggplot(df2, aes_string(x = paste0("factor(", x_var, ")"), y = y_var)) +
-    geom_boxplot() +
-    stat_compare_means(
-      method  = method,
-      label   = "p.signif",
-      label.y = top
-    ) +
-    labs(
-      title = paste0(x_var, " vs. ", y_var),
-      x     = x_var,
-      y     = y_var
-    ) +
-    theme_minimal()
-  
-  print(p)
-}
-
-# 3. Run means ~ size
-walk(means, function(me) {
-  run_test(morphology_features, "lymphocyte_size", me, method = "anova")
-})
-
-# 4. Run sds ~ homogeneity
-walk(sds, function(sd) {
-  run_test(morphology_features, "lymphocyte_homogeneity", sd, method = "anova")
-})
-
-```
-
 ```{r}
 
-morphology_comparisons <- tribble(
-   ~x, ~y,
-   "lymphocyte_size" , "villi_epithelium_lymphocytes_mean_measured_area_um2" ,
-   "lymphocyte_size" , "crypts_epithelium_lymphocytes_mean_measured_area_um2" ,
-   "lymphocyte_size", "villi_lamina_propria_lymphocytes_mean_measured_area_um2" ,
-   "lymphocyte_size", "crypts_lamina_propria_lymphocytes_mean_measured_area_um2",
-   "lymphocyte_homogeneity", "villi_epithelium_lymphocytes_sd_measured_area_um2",
-    "lymphocyte_homogeneity", "crypts_epithelium_lymphocytes_sd_measured_area_um2" ,
-    "lymphocyte_homogeneity","villi_lamina_propria_lymphocytes_sd_measured_area_um2",
-   "lymphocyte_homogeneity", "crypts_lamina_propria_lymphocytes_sd_measured_area_um2")
+subset_name <- "grading_sample"
+
+#Read in pathologist feature
+majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/pathologists_reproducibility/majority_grades.json") %>%
+  rename(image_fragment_mucosa_name = name,
+         villi_lamina_propria_lymphocytes_junctional_gradient = villi_lamina_propria_lymphocytes_junctiona_gradient) 
 
 
+#Parse pathologist features
+path <- majority_grades %>%
+  select(image_fragment_mucosa_name, 
+         villi_epithelium_lymphocytes_cellularity,
+         crypts_epithelium_lymphocytes_cellularity,
+         villi_lamina_propria_lymphocytes_cellularity,
+         crypts_lamina_propria_lymphocytes_cellularity,
+         villi_epithelium_lymphocytes_clustering,
+         crypts_epithelium_lymphocytes_clustering,
+         villi_lamina_propria_lymphocytes_patchy_infiltration,
+         crypts_lamina_propria_lymphocytes_patchy_infiltration, 
+         villi_epithelium_lymphocytes_junctional_gradient,
+         crypts_epithelium_lymphocytes_junctional_gradient,
+         villi_lamina_propria_lymphocytes_junctional_gradient,
+         crypts_lamina_propria_lymphocytes_junctional_gradient) %>% 
+  pivot_longer(
+           cols = matches("^(villi|crypts)_"),
+           names_to = c("layer", "compartment", "feature"),
+           names_pattern = "^(villi|crypts)_(epithelium|lamina_propria)_(.*)$",
+           values_to = "path_value") %>%
+  mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
+  mutate(feature = str_remove(feature, "^lymphocyte_")) %>%
+  mutate(layer = case_when(layer == "villi" ~ "Villi",
+                           layer == "crypts" ~ "Crypts",
+                           TRUE ~ layer),
+         compartment = case_when(compartment == "epithelium" ~ "Epithelium",
+                                 compartment == "lamina_propria" ~ "Lamina propria",
+                                 TRUE ~ compartment),
+         feature = case_when(feature == "cellularity" ~ "Cellularity",
+                             feature == "clustering" ~ "Clustering",
+                             feature == "junctional_gradient" ~ "Junctional gradient",
+                             feature == "patchy_infiltration" ~ "Patchy infiltration",
+                             TRUE ~ feature
+                             ))
 
-# 1. Define every comparison as a two-column tibble
-comparisons <- tribble(
-  ~x,                                                            ~y,
-  "villi_epithelium_lymphocytes_cellularity",                    "villi_epithelium_lymphocytes_mean_log_closest_neighbor_um",
-  "villi_epithelium_lymphocytes_clustering",                     "villi_epithelium_lymphocytes_pct_cluster_ge_3",
-  "villi_epithelium_lymphocytes_clustering",                     "villi_epithelium_lymphocytes_sd_log_closest_neighbor_um",
-  "villi_epithelium_lymphocytes_junctional_gradient",            "villi_epithelium_lymphocytes_median_log_closest_junction_um",
-  "villi_lamina_propria_lymphocytes_cellularity",                "villi_lamina_propria_lymphocyte_count_per_1000_um2",
-  "villi_lamina_propria_lymphocytes_cellularity",                "villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
-  "villi_lamina_propria_lymphocytes_patchy_infiltration",        "villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
-  "villi_lamina_propria_lymphocytes_junctiona_gradient",         "villi_lamina_propria_lymphocytes_median_log_closest_junction_um",
-  "crypts_epithelium_lymphocytes_cellularity",                   "crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um",
-  "crypts_epithelium_lymphocytes_clustering",                    "crypts_epithelium_lymphocytes_pct_cluster_ge_3",
-  "crypts_epithelium_lymphocytes_clustering",                    "crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um",
-  "crypts_epithelium_lymphocytes_junctional_gradient",           "crypts_epithelium_lymphocytes_median_log_closest_junction_um",
-  "crypts_lamina_propria_lymphocytes_cellularity",               "crypts_lamina_propria_lymphocyte_count_per_1000_um2",
-  "crypts_lamina_propria_lymphocytes_cellularity",               "crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um",
-  "crypts_lamina_propria_lymphocytes_patchy_infiltration",       "crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um",
-  "crypts_lamina_propria_lymphocytes_junctional_gradient",       "crypts_lamina_propria_lymphocytes_median_log_closest_junction_um",
-  "lymphocyte_size",                                             "villi_epithelium_lymphocytes_mean_measured_area_um2",
-  "lymphocyte_size",                                             "crypts_epithelium_lymphocytes_mean_measured_area_um2",
-  "lymphocyte_size",                                             "villi_lamina_propria_lymphocytes_mean_measured_area_um2",
-  "lymphocyte_size",                                             "crypts_lamina_propria_lymphocytes_mean_measured_area_um2",
-  "lymphocyte_homogeneity",                                      "villi_epithelium_lymphocytes_sd_measured_area_um2",
-  "lymphocyte_homogeneity",                                      "crypts_epithelium_lymphocytes_sd_measured_area_um2",
-  "lymphocyte_homogeneity",                                      "villi_lamina_propria_lymphocytes_sd_measured_area_um2",
-  "lymphocyte_homogeneity",                                      "crypts_lamina_propria_lymphocytes_sd_measured_area_um2"
+#write_json(path, paste0(output_dir, "parsed_path.json"), pretty = TRUE)
+
+ai  <- fromJSON(paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json")) %>%
+  rename(ai_value = value)
+
+
+#Compartment comparisons
+#List comparisons
+compartment_comparison_list <- list(
+  Cellularity = c("Count", "Lymphocyte distance (mean)"),
+  `Junctional gradient` = c("Junctional distance (median)")
 )
 
-# 2. Loop through each row, run ANOVA, and plot
-comparisons %>% 
-  pwalk(function(x, y) {
-    # subset & drop NAs
-    df <- combined %>% 
-      filter(!is.na(.data[[x]]), !is.na(.data[[y]]))
-    
-    cat("\n\n>>> ANOVA for", y, "by", x, ":\n")
-    model <- aov(as.formula(paste(y, "~ factor(", x, ")")), data = df)
-    print(summary(model))
-    
-    # determine where to put the stars
-    top <- max(df[[y]], na.rm = TRUE) * 1.05
-    
-    # boxplot with stars
-    p <- ggplot(df, aes_string(x = paste0("factor(", x, ")"), y = y)) +
-      geom_boxplot() +
-      stat_compare_means(
-        method    = "anova", 
-        label     = "p.signif", 
-        label.y   = top
-      ) +
-      labs(
-        x = x, 
-        y = y,
-        title = paste("ANOVA p-stars for", y, "∼", x)
-      ) +
-      theme_minimal()
-    
-    print(p)
-  })
 
+#Merge pathologist and ai features
+
+# Generate merged dataframe list for each comparison
+compartment_comparisons <- list()
+
+for (path_feat in names(compartment_comparison_list)) {
+  for (ai_feat in compartment_comparison_list[[path_feat]]) {
+    df <- ai %>%
+      filter(feature == ai_feat) %>%
+      inner_join(
+        path %>% filter(feature == path_feat),
+        by = c("image_fragment_mucosa_name", "layer", "compartment")
+      ) %>%
+      mutate(path_feature = path_feat, ai_feature = ai_feat)
+    
+    compartment_comparisons[[paste(path_feat, ai_feat, sep = " vs ")]] <- df
+  }
+}
+
+# Create storage for test results
+compartment_residuals <- data.frame()
+
+# Loop over all merged comparisons
+for (name in names(compartment_comparisons)) {
+  df <- compartment_comparisons[[name]]
+  
+  # Group by layer and compartment
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next  # skip small groups
+    
+    layer_val <- unique(sub$layer)
+    comp_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    model <- tryCatch(lm(ai_value ~ path_value, data = sub), error = function(e) NULL)
+    
+    if (is.null(model)) next
+    
+    # Shapiro-Wilk test
+    shapiro <- tryCatch(shapiro.test(residuals(model)), error = function(e) NULL)
+    shapiro_p <- if (!is.null(shapiro)) shapiro$p.value else NA
+    
+    # Breusch-Pagan test
+    bp <- tryCatch(bptest(model), error = function(e) NULL)
+    bp_p <- if (!is.null(bp)) bp$p.value else NA
+    
+    # Store results
+    compartment_residuals  <- compartment_residuals  %>%
+      bind_rows(data.frame(
+      comparison = name,
+      layer = layer_val,
+      compartment = comp_val,
+      ai_feature = ai_feature,
+      path_feature = path_feature,
+      shapiro_w = if (!is.null(shapiro)) unname(shapiro$statistic) else NA,
+      shapiro_p = shapiro_p,
+      bp_stat = if (!is.null(bp)) unname(bp$statistic) else NA,
+      bp_df = if (!is.null(bp)) unname(bp$parameter) else NA,
+      bp_p = bp_p
+      ))
+    
+    # QQ plot
+    qq_title <- paste0("QQ Plot: ", ai_feature, " ~ ", path_feature,
+                       "\nLayer: ", layer_val, ", Compartment: ", comp_val)
+    
+    qq <- ggplot(data.frame(resid = residuals(model)), aes(sample = resid)) +
+      stat_qq() + stat_qq_line() +
+      ggtitle(qq_title) +
+      theme_bw()
+    
+    print(qq)  # You can wrap this in a pdf() to save all plots
+  }
+}
+
+compartment_correlations <- data.frame()
+
+for (name in names(compartment_comparisons)) {
+  df <- compartment_comparisons[[name]]
+  
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next
+    
+    layer_val <- unique(sub$layer)
+    comp_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    # Spearman correlation
+    cor_test <- tryCatch(
+      cor.test(sub$ai_value, sub$path_value, method = "spearman"),
+      error = function(e) NULL
+    )
+    
+    if (!is.null(cor_test)) {
+      compartment_correlations  <- compartment_correlations  %>%
+        bind_rows(data.frame(
+          comparison = name,
+          layer = layer_val,
+          compartment = comp_val,
+          ai_feature = ai_feature,
+          path_feature = path_feature,
+          spearman_rho = cor_test$estimate,
+          p_value = cor_test$p.value,
+          method = cor_test$method
+        ))
+    }
+  }
+}
+
+
+
+
+for (name in names(compartment_comparisons)) {
+  df <- compartment_comparisons[[name]]
+  
+  path_feature <- unique(df$path_feature)
+  ai_feature <- unique(df$ai_feature)
+  
+  # Generate plot with custom theme
+  p <- plot_box_compartments(df, path_feature, ai_feature) 
+  # Save to PNG
+  ggsave(
+    filename = paste0(output_dir, gsub(" ", "_", name), ".png"),
+    plot = p,
+    width = 7,
+    height = 2.6,
+    dpi = 300
+  )
+}
+
+### Lamina propria comparisons
+
+
+#List comparisons
+lp_comparison_list <- list(
+  `Cellularity` = "Epithelium-Lamina propria ratio",
+  `Patchy infiltration` = c("% in clusters",
+                            "Lymphocyte distance (mean)",
+                            "Lymphocyte distance (sd)"))
+
+
+lp_comparisons <- list()
+
+for (path_feat in names(lp_comparison_list)) {
+  for (ai_feat in lp_comparison_list[[path_feat]]) {
+    df <- ai %>%
+      filter(compartment == "Lamina propria",
+             feature == ai_feat) %>%
+      inner_join(
+        path %>% filter(compartment == "Lamina propria",
+                        feature == path_feat),
+        by = c("image_fragment_mucosa_name", "layer", "compartment")
+      ) %>%
+      mutate(path_feature = path_feat, ai_feature = ai_feat)
+    
+    lp_comparisons[[paste(path_feat, ai_feat, sep = " vs ")]] <- df
+  }
+}
+
+# Create storage for test results
+lp_residuals <- data.frame()
+
+# Loop over all merged comparisons
+for (name in names(lp_comparisons)) {
+  df <- lp_comparisons[[name]]
+  
+  # Group by layer and compartment
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next  # skip small groups
+    
+    layer_val <- unique(sub$layer)
+    compartment_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    model <- tryCatch(lm(ai_value ~ path_value, data = sub), error = function(e) NULL)
+    
+    if (is.null(model)) next
+    
+    # Shapiro-Wilk test
+    shapiro <- tryCatch(shapiro.test(residuals(model)), error = function(e) NULL)
+    shapiro_p <- if (!is.null(shapiro)) shapiro$p.value else NA
+    
+    # Breusch-Pagan test
+    bp <- tryCatch(bptest(model), error = function(e) NULL)
+    bp_p <- if (!is.null(bp)) bp$p.value else NA
+    
+    # Store results
+    lp_residuals  <- lp_residuals  %>%
+      bind_rows(data.frame(
+      comparison = name,
+      layer = layer_val,
+      compartment = compartment_val,
+      ai_feature = ai_feature,
+      path_feature = path_feature,
+      shapiro_w = if (!is.null(shapiro)) unname(shapiro$statistic) else NA,
+      shapiro_p = shapiro_p,
+      bp_stat = if (!is.null(bp)) unname(bp$statistic) else NA,
+      bp_df = if (!is.null(bp)) unname(bp$parameter) else NA,
+      bp_p = bp_p
+      ))
+    
+    # QQ plot
+    qq_title <- paste0("QQ Plot: ", ai_feature, " ~ ", path_feature,
+                       "\nLayer: ", layer_val)
+    
+    qq <- ggplot(data.frame(resid = residuals(model)), aes(sample = resid)) +
+      stat_qq() + stat_qq_line() +
+      ggtitle(qq_title) +
+      theme_bw()
+    
+    print(qq)  
+  }
+}
+
+lp_correlations <- data.frame()
+
+for (name in names(lp_comparisons)) {
+  df <- lp_comparisons[[name]]
+  
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next
+    
+    layer_val <- unique(sub$layer)
+    compartment_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    # Spearman correlation
+    cor_test <- tryCatch(
+      cor.test(sub$ai_value, sub$path_value, method = "spearman"),
+      error = function(e) NULL
+    )
+    
+    if (!is.null(cor_test)) {
+      lp_correlations  <- lp_correlations  %>%
+        bind_rows(data.frame(
+          comparison = name,
+          layer = layer_val,
+          compartment = compartment_val,
+          ai_feature = ai_feature,
+          path_feature = path_feature,
+          spearman_rho = cor_test$estimate,
+          p_value = cor_test$p.value,
+          method = cor_test$method
+        ))
+    }
+  }
+}
+
+
+for (name in names(lp_comparisons)) {
+  df <- lp_comparisons[[name]]
+  
+  path_feature <- unique(df$path_feature)
+  ai_feature <- unique(df$ai_feature)
+  
+  # Generate plot with custom theme
+  p <- plot_box_layers(df, path_feature, ai_feature) 
+  
+  # Save to PNG 
+  ggsave(
+  filename = paste0(
+    output_dir,
+    gsub("[ \n%]", "_", name),
+    ".png"
+  ),
+  plot = p,
+  width = 7,
+  height = 1.75,
+  dpi = 300
+)
+}
+
+epi_comparison_list <- list(
+  `Clustering` = c("% in clusters", 
+                   "Lymphocyte distance (mean)", 
+                   "Lymphocyte distance (sd)"))
+
+epi_comparisons <- list()
+
+for (path_feat in names(epi_comparison_list)) {
+  for (ai_feat in epi_comparison_list[[path_feat]]) {
+    df <- ai %>%
+      filter(compartment == "Epithelium",
+             feature == ai_feat) %>%
+      inner_join(
+        path %>% filter(compartment == "Epithelium",
+                        feature == path_feat),
+        by = c("image_fragment_mucosa_name", "layer", "compartment")
+      ) %>%
+      mutate(path_feature = path_feat, ai_feature = ai_feat)
+    
+    epi_comparisons[[paste(path_feat, ai_feat, sep = " vs ")]] <- df
+  }
+}
+
+# Create storage for test results
+epi_residuals <- data.frame()
+
+# Loop over all merged comparisons
+for (name in names(epi_comparisons)) {
+  df <- epi_comparisons[[name]]
+  
+  # Group by layer and compartment
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next  # skip small groups
+    
+    layer_val <- unique(sub$layer)
+    compartment_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    model <- tryCatch(lm(ai_value ~ path_value, data = sub), error = function(e) NULL)
+    
+    if (is.null(model)) next
+    
+    # Shapiro-Wilk test
+    shapiro <- tryCatch(shapiro.test(residuals(model)), error = function(e) NULL)
+    shapiro_p <- if (!is.null(shapiro)) shapiro$p.value else NA
+    
+    # Breusch-Pagan test
+    bp <- tryCatch(bptest(model), error = function(e) NULL)
+    bp_p <- if (!is.null(bp)) bp$p.value else NA
+    
+    # Store results
+    epi_residuals  <- epi_residuals  %>%
+      bind_rows(data.frame(
+      comparison = name,
+      layer = layer_val,
+      compartment = compartment_val,
+      ai_feature = ai_feature,
+      path_feature = path_feature,
+      shapiro_w = if (!is.null(shapiro)) unname(shapiro$statistic) else NA,
+      shapiro_p = shapiro_p,
+      bp_stat = if (!is.null(bp)) unname(bp$statistic) else NA,
+      bp_df = if (!is.null(bp)) unname(bp$parameter) else NA,
+      bp_p = bp_p
+      ))
+    
+    # QQ plot
+    qq_title <- paste0("QQ Plot: ", ai_feature, " ~ ", path_feature,
+                       "\nLayer: ", layer_val)
+    
+    qq <- ggplot(data.frame(resid = residuals(model)), aes(sample = resid)) +
+      stat_qq() + stat_qq_line() +
+      ggtitle(qq_title) +
+      theme_bw()
+    
+    print(qq)  
+  }
+}
+
+epi_correlations <- data.frame()
+
+for (name in names(epi_comparisons)) {
+  df <- epi_comparisons[[name]]
+  
+  split_df <- df %>% group_by(layer, compartment) %>% group_split()
+  
+  for (sub in split_df) {
+    if (nrow(sub) < 5) next
+    
+    layer_val <- unique(sub$layer)
+    compartment_val <- unique(sub$compartment)
+    path_feature <- unique(sub$path_feature)
+    ai_feature <- unique(sub$ai_feature)
+    
+    # Spearman correlation
+    cor_test <- tryCatch(
+      cor.test(sub$ai_value, sub$path_value, method = "spearman"),
+      error = function(e) NULL
+    )
+    
+    if (!is.null(cor_test)) {
+      epi_correlations  <- epi_correlations  %>%
+        bind_rows(data.frame(
+          comparison = name,
+          layer = layer_val,
+          compartment = compartment_val,
+          ai_feature = ai_feature,
+          path_feature = path_feature,
+          spearman_rho = cor_test$estimate,
+          p_value = cor_test$p.value,
+          method = cor_test$method
+        ))
+    }
+  }
+}
+
+
+for (name in names(epi_comparisons)) {
+  df <- epi_comparisons[[name]]
+  
+  path_feature <- unique(df$path_feature)
+  ai_feature <- unique(df$ai_feature)
+  
+  # Generate plot with custom theme
+  p <- plot_box_layers(df, path_feature, ai_feature) 
+  
+  # Save to PNG 
+  ggsave(
+  filename = paste0(
+    output_dir,
+    gsub("[ \n%]", "_", name),
+    ".png"
+  ),
+  plot = p,
+  width = 7,
+  height = 1.75,
+  dpi = 300
+)
+}
+
+
+correlation <- bind_rows(compartment_correlations, lp_correlations, epi_correlations)
+
+residuals_and_correlations <- bind_rows(compartment_residuals, lp_residuals, epi_residuals) %>%
+  left_join(correlation)
+
+correlation_for_paper <- residuals_and_correlations %>%
+  mutate(
+    shapiro_w = round(shapiro_w, 2),
+    shapiro_p = case_when(
+      is.na(shapiro_p) ~ NA_character_,
+      shapiro_p < 0.0001 ~ "p<.0001",
+      shapiro_p < 0.001  ~ "p<.001",
+      shapiro_p < 0.01 ~ paste0("p = ", sub("^0\\.", ".", format(round(shapiro_p, 3), nsmall = 3))),
+      TRUE ~ paste0("p = ", sub("^0\\.", ".", format(round(shapiro_p, 2), nsmall = 2)))),
+      bp_stat = round(bp_stat, 2),
+      bp_p = case_when(
+           is.na(bp_p) ~ NA_character_,
+           bp_p < 0.0001 ~ "p<.0001",
+           bp_p < 0.001 ~ "p<.001",
+           bp_p < 0.01 ~ paste0("p = ", sub("^0\\.", ".", format(round(bp_p, 3), nsmall = 3))),
+           TRUE ~ paste0("p = ", sub("^0\\.", ".", format(round(bp_p, 2), nsmall = 2)))),
+      spearman_rho = round(spearman_rho, 2),
+      spearman_p = case_when(
+           is.na(p_value) ~ NA_character_,
+           p_value < 0.0001 ~ "p<.0001",
+           p_value < 0.001 ~ "p<.001",
+           p_value < 0.01 ~ paste0("p = ", sub("^0\\.", ".", format(round(p_value, 3), nsmall = 3))),
+           TRUE ~ paste0("p = ", sub("^0\\.", ".", format(round(p_value, 2), nsmall = 2))))) %>%
+  mutate(shapiro = paste0(shapiro_w, " (",shapiro_p, ")"),
+         bp = paste0(bp_stat, " (",bp_p, ")"),
+         spearman = paste0(spearman_rho, " (",spearman_p,")")) %>%
+  select(layer, compartment, path_feature, ai_feature, shapiro, bp, spearman) %>%
+  arrange(desc(layer),
+          compartment,
+          path_feature) %>%
+  rename(Layer = layer,
+         Compartment = compartment,
+         `Ai-derived` = ai_feature,
+         `Pathologist-graded` = path_feature,
+         `Shapiro-Wilk\n(W, p)` = shapiro,
+         `Breusch-Pagan\n(statistic, p)` = bp,
+         `Spearman\n(rho, p)` = spearman) 
+  
+         
+
+write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
+
+write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
 ```
+
+
+
+### preliminary exploration of lymphocyte size/monomorphism
+does not correlate but class imbalanced path set.
+count jointly. 
+```{r}
+
+ai_size_by_comp <- ai_features %>%
+  select(image_fragment_mucosa_name,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2) %>% 
+  pivot_longer(
+           cols = matches("^(villi|crypts)_"),
+           names_to = "feature",
+           values_to = "value")
+
+
+
+
+path_morph <- majority_grades %>%
+  select(image_fragment_mucosa_name,
+         lymphocyte_size,
+         lymphocyte_homogeneity) %>%
+  pivot_longer(
+           cols = c("lymphocyte_size", "lymphocyte_homogeneity"),
+           names_to = "feature",
+           values_to = "value") %>%
+  mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
+  mutate(feature = str_remove(feature, "^lymphocyte_"))
+
+
+ai <- ai_size_by_comp %>% rename(ai_value = value)
+path <- path_morph %>% rename(path_value = value) 
+
+comparison_list <- list(
+  size = c("villi_epithelium_lymphocytes_mean_measured_area_um2" ,
+          "crypts_epithelium_lymphocytes_mean_measured_area_um2",
+          "villi_lamina_propria_lymphocytes_mean_measured_area_um2",
+          "crypts_lamina_propria_lymphocytes_mean_measured_area_um2"),
+  homogeneity = c("villi_epithelium_lymphocytes_sd_measured_area_um2",
+                  "crypts_epithelium_lymphocytes_sd_measured_area_um2",
+                  "villi_lamina_propria_lymphocytes_sd_measured_area_um2",
+                  "crypts_lamina_propria_lymphocytes_sd_measured_area_um2"
+                  ))
+# Generate merged dataframe list for each comparison
+merged_list <- list()
+
+for (path_feat in names(comparison_list)) {
+  for (ai_feat in comparison_list[[path_feat]]) {
+    df <- ai %>%
+      filter(feature == ai_feat) %>%
+      inner_join(
+        path %>% filter(feature == path_feat),
+        by = c("image_fragment_mucosa_name")
+      ) %>%
+      mutate(path_feature = path_feat, ai_feature = ai_feat)
+    
+    merged_list[[paste(path_feat, ai_feat, sep = "_vs_")]] <- df
+  }
+}
+
+# Create storage for test results
+test_results <- data.frame()
+
+# Loop over all merged comparisons
+for (name in names(merged_list)) {
+  df <- merged_list[[name]]
+  
+  path_feature <- unique(df$path_feature)
+  ai_feature <- unique(df$ai_feature)
+  
+  model <- tryCatch(lm(ai_value ~ path_value, data = df), error = function(e) NULL)
+  
+  if (is.null(model)) next
+  
+  # Shapiro-Wilk test
+  shapiro <- tryCatch(shapiro.test(residuals(model)), error = function(e) NULL)
+  shapiro_p <- if (!is.null(shapiro)) shapiro$p.value else NA
+  
+  # Breusch-Pagan test
+  bp <- tryCatch(bptest(model), error = function(e) NULL)
+  bp_p <- if (!is.null(bp)) bp$p.value else NA
+  
+  # Store results
+  test_results <- test_results %>%
+    
+    bind_rows(data.frame(
+      comparison = name,
+      ai_feature = ai_feature,
+      path_feature = path_feature,
+      shapiro_w = if (!is.null(shapiro)) unname(shapiro$statistic) else NA,
+      shapiro_p = shapiro_p,
+      bp_stat = if (!is.null(bp)) unname(bp$statistic) else NA,
+      bp_df = if (!is.null(bp)) unname(bp$parameter) else NA,
+      bp_p = bp_p
+      ))
+    
+    # QQ plot
+    qq_title <- paste0("QQ Plot: ", ai_feature, " ~ ", path_feature)
+    
+    qq <- ggplot(data.frame(resid = residuals(model)), aes(sample = resid)) +
+      stat_qq() + stat_qq_line() +
+      ggtitle(qq_title) +
+      theme_bw()
+    
+    print(qq)  
+}
+
+
+
+robust_results <- data.frame()
+
+for (name in names(merged_list)) {
+  df <- merged_list[[name]]
+  path_feature <- unique(df$path_feature)
+  ai_feature <- unique(df$ai_feature)
+  
+  # Spearman correlation
+  cor_test <- tryCatch(
+    cor.test(df$ai_value, df$path_value, method = "spearman"),
+    error = function(e) NULL
+    )
+  
+  if (!is.null(cor_test)) {
+      robust_results <- robust_results %>%
+        bind_rows(data.frame(
+          comparison = name,
+          ai_feature = ai_feature,
+          path_feature = path_feature,
+          spearman_rho = cor_test$estimate,
+          p_value = cor_test$p.value,
+          method = cor_test$method
+        ))
+  }
+}
+
+
+
+
+robust_results <- robust_results %>%
+  mutate(
+    p_value_report = case_when(
+      is.na(p_value) ~ NA_character_,
+      p_value < 0.0001 ~ "p < 0.0001",
+      p_value < 0.001 ~ "p < 0.001",
+      TRUE ~ paste0("p = ", format(round(p_value, 3), nsmall = 3))
+    )
+  )
+```
+
+
+
+
+
+
+
+

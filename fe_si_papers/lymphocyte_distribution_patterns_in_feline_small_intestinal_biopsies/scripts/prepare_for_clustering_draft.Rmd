@@ -1,0 +1,1100 @@
+---
+title: "cluster_prep"
+author: "Wulcan"
+date: "2025-06-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+###  Libraries and functions
+```{r, message=FALSE, warning=FALSE}
+library(jsonlite)
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(scales) 
+library(factoextra) #for pca
+library(RColorBrewer)
+
+
+to_box <- "~/Library/CloudStorage/Box-Box/"
+
+explore_unscaled_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_unscaled/")
+
+cluster_prep_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/cluster_prep/")
+
+sub_name_translation <- c(
+  villi_lp   = "Villi Lamina propria",
+  crypts_lp  = "Crypts Lamina propria",
+  villi_epi  = "Villi Epithelium",
+  crypts_epi = "Crypts Epithelium"
+)
+
+
+# Custom renaming function: ONLY feature name
+rename_features_only <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    if (length(parts) < 3) return(var)  # Leave ID variable alone
+
+    feature_raw <- parts[3]
+
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clusters",
+      feature_raw == "Size (mean)" ~ "Mean\nsize",
+      feature_raw == "Size (sd)" ~ "SD\nsize",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean\ndistance",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD\ndistance",
+      TRUE ~ feature_raw
+    )
+    feature
+  }, USE.NAMES = FALSE)
+}
+ 
+rename_custom_vars <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    # If not a 3-part name, return original
+    if (length(parts) < 3) return(var)
+
+    # Original components
+    layer <- parts[1]
+    compartment <- parts[2]
+    feature_raw <- parts[3]
+
+    # Abbreviate compartment
+    compartment_abbr <- case_when(
+      compartment == "Epithelium" ~ "Epi",
+      compartment == "Lamina propria" ~ "LP",
+      TRUE ~ compartment
+    )
+
+    # Custom feature name abbreviation
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clust",
+      feature_raw == "Size (mean)" ~ "Mean size",
+      feature_raw == "Size (sd)" ~ "SD size",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean dist",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD dist",
+      TRUE ~ feature_raw
+    )
+
+    paste0(feature, "\n", layer, " ", compartment_abbr)
+  }, USE.NAMES = FALSE)
+}
+
+
+
+prepare_pca_full_analysis <- function(df,
+                                      id_col = "image_fragment_mucosa_name",
+                                      exclude_cols = c("image_fragment_mucosa_name"),
+                                      scale_data = FALSE,
+                                      explore_dir = cluster_prep_dir,
+                                      prefix = subset_name) {
+  
+  if(!dir.exists(explore_dir)) dir.create(explore_dir, recursive = TRUE)
+
+  # Prepare data
+  df_for_pca <- df %>%
+    select(-all_of(exclude_cols)) %>%
+    drop_na()
+  
+  # Shorten variable names using provided rename function
+  short_var_names <- rename_custom_vars(names(df_for_pca))
+  colnames(df_for_pca) <- short_var_names
+  
+  # PCA
+  pca <- prcomp(df_for_pca, center = scale_data, scale. = scale_data)
+  
+  # Scree plot
+  scree_plot <- fviz_eig(pca, addlabels = TRUE, ylim = c(0, 100)) +
+    ggtitle(NULL) +
+    ylab("Percentage of variance") +
+    theme_bw(base_size = 9)
+  ggsave(file.path(explore_dir, paste0("scree_plot_", prefix, ".png")),
+         scree_plot, width = 7, height = 3.3, dpi = 300)
+  
+  print(scree_plot)
+  
+
+  
+  # Variable contributions
+  var_contrib <- get_pca_var(pca)$contrib %>% as.data.frame()
+  var_contrib <- var_contrib %>% 
+    rownames_to_column("Variable") %>%
+    arrange(desc(Dim.1))
+  
+  # Save contributions table
+  write_json(var_contrib, file.path(explore_dir, paste0("variable_contributions_", prefix, ".json")))
+  
+  loadings <- as.data.frame(pca$rotation) %>%
+    tibble::rownames_to_column(var = "Variable") %>%
+    pivot_longer(
+      cols = starts_with("PC"),
+      names_to = "PrincipalComponent",
+      values_to = "Loading"
+    ) %>%
+    filter(PrincipalComponent %in% paste0("PC", 1:6))  # first 9 PCs
+  
+  loadings$Variable <- str_replace_all(loadings$Variable, "\n", " - ")
+  
+  custom_order <- c(
+  "Count - Villi LP", "Mean dist - Villi LP", "SD dist - Villi LP",
+  "Count - Crypts LP", "Mean dist - Crypts LP", "SD dist - Crypts LP",
+  "Count - Villi Epi", "Mean dist - Villi Epi", "SD dist - Villi Epi",
+  "Count - Crypts Epi", "Mean dist - Crypts Epi", "SD dist - Crypts Epi",
+  "Epi-LP - Villi LP", "Epi-LP - Crypts LP",
+  "Mean size - Villi LP", "Mean size - Crypts LP",
+  "Mean size - Villi Epi", "Mean size - Crypts Epi",
+  "SD size - Villi LP", "SD size - Crypts LP",
+  "SD size - Villi Epi", "SD size - Crypts Epi"
+  )
+  
+  # Reorder Variable as factor
+  loadings$Variable <- factor(loadings$Variable, levels = custom_order)
+
+  
+  var_plot <- ggplot(loadings, aes(x = Variable, y = Loading)) +
+    geom_col(aes(fill = Variable)) +
+    facet_wrap(~ PrincipalComponent, scales = "free_y") +
+    theme_bw(base_size = 9) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = "right",
+      legend.box = "vertical"
+    ) +
+    guides(fill = guide_legend(ncol = 1)) +
+    labs(
+      title = "Variable loadings by principal component",
+      y = "Loading", x = "", fill = "Variable"
+    )
+  
+  ggsave(file.path(explore_dir, paste0("var_load_by_PC_", prefix, ".png")),
+         var_plot, width = 7, height = 7, dpi = 300)
+  print(var_plot)
+  
+  # Generate and save biplots 
+  pc_count <- min(4, ncol(pca$x))  
+  
+  biplots <- list()
+  for(i in 1:(pc_count-1)) {
+    for(j in (i+1):pc_count) {
+      pcs <- c(i, j)
+      contrib_i <- sort(get_pca_var(pca)$contrib[, i], decreasing = TRUE)
+      contrib_j <- sort(get_pca_var(pca)$contrib[, j], decreasing = TRUE)
+      
+      
+      # Create biplot
+      biplot <- fviz_pca_biplot(pca, axes = pcs,
+                                geom.ind = "point",
+                               # select.var = list(name = top_vars),
+                                col.ind = "lightblue",
+                               pointsize = 1.2,
+                               labelsize = 3,
+                                col.var = "contrib",
+                                gradient.cols = c("#fd8d3c", "#f03b20", "#bd0026"),
+                                repel = TRUE) +
+        ggtitle(paste("Biplot PC", i, "vs PC", j)) +
+        theme_bw(base_size = 9)
+      
+      # Save plot
+      plot_name <- paste0("biplot_PC", i, "_PC", j, "_", prefix, ".png")
+      ggsave(file.path(explore_dir, plot_name),
+             biplot, width = 7, height = 3.5, dpi = 300)
+      
+      biplots[[paste0("PC", i, "_PC", j)]] <- biplot
+      
+      print(biplot)
+    }
+  }
+  
+  # Return results invisibly
+  invisible(list(
+    pca = pca,
+    df_for_pca = df_for_pca,
+    scree_plot = scree_plot,
+    var_contrib = var_contrib,
+    biplots = biplots
+  ))
+}
+
+
+plot_kmeans_elbow_silhouette <- function(pca, 
+                                         pcs = 1:6, 
+                                         kmax = 15, 
+                                         explore_dir = cluster_prep_dir,
+                                         prefix = subset_name) {
+  
+  df_for_clust <- as.data.frame(pca$x[, pcs])
+  
+  # Elbow plot (WSS)
+  elbow_plot <- fviz_nbclust(df_for_clust, kmeans, method = "wss", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Total within-cluster\nsum of squares"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)
+    ) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 1)))
+
+  # Save elbow plot
+  elbow_path <- file.path(explore_dir, paste0("elbow_plot_", prefix, ".png"))
+  ggsave(filename = elbow_path,
+         plot = elbow_plot, width = 7, height = 7, dpi = 300)
+  
+  print(elbow_plot)
+  
+  # Silhouette plot
+  silhouette_plot <- fviz_nbclust(df_for_clust, kmeans, method = "silhouette", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Average silhouette width"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)
+    ) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 1)))
+  
+  # Save silhouette plot
+  silhouette_path <- file.path(explore_dir, paste0("silhouette_plot_", prefix, ".png"))
+  ggsave(filename = silhouette_path,
+         plot = silhouette_plot, width = 7, height = 7, dpi = 300)
+  
+  print(silhouette_plot)
+  
+  invisible(list(
+    df_for_clust = df_for_clust,
+    plots = list(elbow = elbow_plot, silhouette = silhouette_plot),
+    paths = list(elbow_plot = elbow_path, silhouette_plot = silhouette_path)
+  ))
+}
+
+cluster_k <- function(pca,
+                      best_k,
+                      original_df,
+                      pcs_used = NULL,
+                      dir = cluster_prep_dir,
+                      prefix = subset_name) {
+  set.seed(123)
+  
+  df_for_clust <- as.data.frame(pca$x[, pcs_used])
+
+  km <- kmeans(df_for_clust, centers = best_k, nstart = 25)
+
+  # Define color palette with sufficient colors
+  if(best_k <= 8){
+    palette <- brewer.pal(8, "Dark2")[1:best_k]
+  } else if(best_k <= 12){
+    palette <- brewer.pal(best_k, "Set3")
+  } else {
+    # For more than 12 clusters, use a larger palette
+    palette <- colorRampPalette(brewer.pal(12, "Set3"))(best_k)
+  }
+
+  # Helper function to make PCA plots
+  make_pca_cluster_plot <- function(pc_x, pc_y){
+    plot <- fviz_pca_ind(
+      pca,
+      axes = c(pc_x, pc_y),
+      geom.ind = "point",
+      pointshape = 21,
+      fill.ind = factor(km$cluster),
+      col.ind = "black",
+      palette = palette,
+      addEllipses = TRUE,
+      ellipse.level = 0.90,
+      repel = TRUE,
+      legend.title = "Cluster"
+    ) +
+    ggtitle(paste("Clusters on PC", pc_x, "vs PC", pc_y)) +
+    theme_bw(base_size = 9) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 9),
+      legend.title = element_text(size = 9),
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 9)
+    )
+    return(plot)
+  }
+
+  # Define which PC combinations to plot
+  pc_combinations <- list(c(1,2), c(1,3), c(1,4), c(2,3), c(2,4))
+  plots <- list()
+
+  # Generate and save each PCA cluster plot
+  for(pcs in pc_combinations){
+    p <- make_pca_cluster_plot(pcs[1], pcs[2])
+    plot_name <- paste0("pca_clusters_PC", pcs[1], "_PC", pcs[2], "_", prefix, ".png")
+    ggsave(
+      filename = file.path(dir, plot_name),
+      plot = p,
+      width = 7, height = 3.5, units = "in", dpi = 300
+    )
+    plots[[paste0("PC", pcs[1], "_PC", pcs[2])]] <- p
+    print(p)
+  }
+
+  # Assign clusters back to original data
+  cluster_assignments <- original_df %>%
+    mutate(cluster = km$cluster[match(rownames(original_df), rownames(df_for_clust))])
+
+  # Calculate distances to cluster centers (PCA space)
+  distances <- sqrt(rowSums((df_for_clust - km$centers[km$cluster, ])^2))
+  cluster_assignments$distance_to_center <- distances[match(rownames(original_df), rownames(df_for_clust))]
+
+  # Return cluster data, PCA plots, and assignments
+  invisible(list(
+    clustered_data = cluster_assignments,
+    cluster_object = km,
+    pca_plots = plots
+  ))
+}
+
+
+prepare_for_clustering <- function(df, 
+                                   id_col = "image_fragment_mucosa_name", 
+                                   exclude_cols = c("image_fragment_mucosa_name"),
+                                   scale_data = FALSE,
+                                   dir = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/cluster_prep//", 
+                                   prefix = "",
+                                   kmax = 30) {
+  # Clean and subset data for clustering
+  df_for_clust <- df %>%
+    select(-all_of(exclude_cols)) %>%
+    drop_na()
+  
+  # Keep IDs aligned with filtered data (optional return)
+  id_df <- df %>%
+    drop_na() %>%
+    select(all_of(id_col)) %>%
+    slice(match(rownames(df_for_clust), rownames(df_for_clust)))
+  
+  # Scale if requested
+  if(scale_data) {
+    df_for_clust <- scale(df_for_clust)
+  }
+  
+  # PCA (no centering/scaling if scale_data=FALSE, otherwise prcomp defaults)
+  pca <- prcomp(df_for_clust, center = scale_data, scale. = scale_data)
+  
+  # Scree plot
+  scree_plot <- fviz_eig(pca, addlabels = TRUE, ylim = c(0, 100)) +
+    ggtitle(NULL) +
+    ylab("Percentage\nof variance") +  # <- this is the split label
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)
+    )
+  print(scree_plot)
+  ggsave(filename = file.path(explore_dir, paste0("scree_plot_", prefix, ".png")),
+         plot = scree_plot, width = 7, height = 2.25, dpi = 300)
+  
+  # PCA biplot
+  biplot <- fviz_pca_biplot(pca,
+                            geom.ind = "point",
+                            col.ind = "lightblue",
+                            col.var = "contrib",
+                            gradient.cols = c("#fd8d3c", "#f03b20", "#bd0026"),
+                            repel = TRUE) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      panel.grid = element_blank()
+    )
+  print(biplot)
+  ggsave(filename = file.path(explore_dir, paste0("pca_biplot_", prefix, ".png")),
+         plot = biplot, width = 7, height = 7, dpi = 300)
+  
+  # Elbow plot for kmeans
+  elbow <- fviz_nbclust(df_for_clust, kmeans, method = "wss", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Total within-cluster\nsum of squares"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 5)))
+  
+  print(elbow)
+  ggsave(filename = file.path(explore_dir, paste0("elbow_plot_", prefix, ".png")),
+         plot = elbow, width = 7, height = 7, dpi = 300)
+  
+  # Silhouette plot for kmeans
+  silhouette <- fviz_nbclust(df_for_clust, kmeans, method = "silhouette", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Average silhouette width"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 5)))
+  
+  print(silhouette)
+  ggsave(filename = file.path(explore_dir, paste0("silhouette_plot_", prefix, ".png")),
+         plot = silhouette, width = 7, height = 7, dpi = 300)
+  
+  # Return cleaned data, IDs, PCA, and plots invisibly for further use
+  list(
+    df_for_clust = df_for_clust,
+    id_df = id_df,
+    pca = pca,
+    plots = list(scree_plot = scree_plot, biplot = biplot, elbow = elbow, silhouette = silhouette)
+  )
+}
+
+
+
+
+
+prepare_cluster_summary <- function(
+  clust_obj,         # list from prepare_for_clustering
+  best_k,            # chosen number of clusters
+  original_df,       # full, untransformed data with all rows
+  explore_features_dir = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/",
+  prefix = "Crypts - lamina propria"
+) {
+  
+  set.seed(123)
+  library(ggplot2)
+  library(factoextra)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+
+  # Extract necessary components
+  df_for_clust <- clust_obj$df_for_clust
+  pca <- clust_obj$pca
+  id_df <- clust_obj$id_df
+
+  # K-means clustering
+  km <- kmeans(df_for_clust, centers = best_k, nstart = 25)
+
+  # Create PCA biplot with clusters
+  cluster_plot <- fviz_pca_ind(
+    pca,
+    geom.ind = "point",
+    pointshape = 21,
+    fill.ind = factor(km$cluster),
+    col.ind = "black",
+    palette = "Dark2",
+    addEllipses = TRUE,
+    ellipse.level = 0.90,
+    repel = TRUE,
+    legend.title = "") +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.title = element_text(size = 9),
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 9)
+    )
+
+  ggsave(
+    filename = file.path(explore_features_dir, paste0("pca_of_kmeans_", prefix, ".png")),
+    plot = cluster_plot,
+    width = 7, height = 2.25, units = "in", dpi = 300
+  )
+  
+  print(cluster_plot)
+
+  # Assign clusters to IDs
+  cluster_df <- id_df %>%
+    mutate(cluster = km$cluster)
+
+  # Compute distances to cluster centers (to assess central vs peripheral)
+  centers_pca_space <- predict(pca, newdata = km$centers)
+  obs_pca_space <- as.data.frame(pca$x[, 1:ncol(centers_pca_space)])
+  distances <- purrr::map_dbl(1:nrow(obs_pca_space), function(i) {
+    cl <- km$cluster[i]
+    sqrt(sum((obs_pca_space[i, ] - centers_pca_space[cl, ])^2))
+  })
+  cluster_df$distance_to_center <- distances
+
+  # Summary of original (raw) variables by cluster
+  original_summary <- original_df %>%
+    mutate(cluster = km$cluster[match(rownames(original_df), rownames(df_for_clust))]) %>%
+    group_by(cluster) %>%
+    summarise(across(where(is.numeric), list(mean = mean, sd = sd), .names = "{.col}_{.fn}"))
+
+  # Return both the assignment and summary
+  list(
+    cluster_assignments = cluster_df,
+    cluster_summary = original_summary
+  )
+}
+
+db_cluster_summary <- function(
+  clust_obj,# list from prepare_for_clustering
+  pc_n, #number of principal components
+  eps,         #epsilon for dbscan
+  minPts,  #minPts for dbscan
+  explore_features_dir = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_lymphocyte_distribution/",
+  prefix = ""
+) {
+  
+  set.seed(123)
+  library(factoextra)
+  library(tidyverse)
+  library(dbscan)
+  library(RANN)
+
+  # Extract necessary components
+  df_for_clust <- clust_obj$df_for_clust
+  pca <- clust_obj$pca
+  id_df <- clust_obj$id_df
+  
+  pca_data <- as.data.frame(pca$x[,1:pc_n])
+
+  # K-means clustering
+  db <- dbscan(pca_data, eps = eps, minPts = minPts)
+
+
+  # Create PCA biplot with clusters
+  cluster_plot <- fviz_pca_ind(
+    pca,
+    geom.ind = "point",
+    pointshape = 21,
+    fill.ind = factor(db$cluster),
+    col.ind = "black",
+    palette = "Dark2",
+    addEllipses = TRUE,
+    ellipse.level = 0.90,
+    repel = TRUE,
+    legend.title = "") +
+    ggtitle(paste0("DBSCAN of PC1 to PC", pc_n, "; epsilon = ", eps, "MinPts = ", minPts )) +
+    theme_bw(base_size = 9) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.title = element_text(size = 9),
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 9)
+    )
+
+  ggsave(
+    filename = file.path(explore_features_dir, paste0("pca_of_dbscan_pcn_", pc_n, "_eps_", eps, "_MinPts_", minPts, ".png")),
+    plot = cluster_plot,
+    width = 7, height = 6.8, units = "in", dpi = 300
+  )
+  
+  print(cluster_plot)
+  
+  nn_result <- RANN::nn2(data = pca_data, k = 2)
+  nearest_distances <- nn_result$nn.dists[, 2]
+  df_nn <- pca_data %>%
+    mutate(nearest_neighbor_dist = nearest_distances)
+  
+  nn_plot <- ggplot(df_nn, aes(nearest_neighbor_dist)) +
+    geom_histogram(bin_width = 0.1) +
+    scale_x_continuous(
+      breaks = scales::pretty_breaks(n = 10)) +
+    theme_bw(base_size = 9) + 
+    labs(title = paste0("Nearest neigbhbor distance in PCA space (PC 1-)", pc_n),
+         x = "Nearest neighbor distance",
+         y = "Count")
+  
+  ggsave(
+    filename = file.path(explore_features_dir, paste0("nn_for_pca_pcn_1_", pc_n, ".png")),
+    plot = nn_plot,
+    width = 3.5, height = 2.25, units = "in", dpi = 300
+  )
+
+  # Assign clusters to IDs
+  cluster_df <- id_df %>%
+    mutate(cluster = db$cluster, 
+           nn_dist = df_nn$nearest_neighbor_dist)
+  
+
+  cluster_df
+}
+
+```
+
+
+
+
+### PCA 
+```{r}
+subset_name <- "batch_1"
+filtered_scaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_scaled_",subset_name ,".json")) %>%
+   select(- ends_with("_% in clusters")) %>%
+     select(- ends_with("_Junctional distance (median)")) 
+     
+  
+pca_prep <- prepare_pca_full_analysis(filtered_scaled)
+var_cont <- pca_prep$var_contrib
+```
+
+      
+
+
+### Elbows & Silhouettes
+```{r}
+pca <- pca_prep$pca
+explore_ks <- plot_kmeans_elbow_silhouette(pca, pcs = 1:4, kmax = 50)
+```
+
+### K-means
+```{r, warning=FALSE, message=FALSE}
+
+filtered_unscaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_unscaled_",subset_name ,".json")) %>%
+   select(- ends_with("_% in clusters")) %>%
+     select(- ends_with("_Junctional distance (median)")) 
+
+k_means_9 <- cluster_k(pca, best_k = 9, filtered_unscaled, pcs_used = 1:4, dir = cluster_prep_dir, prefix = subset_name)
+
+k_means_data <- k_means_9$clustered_data
+```
+#### Check pairwise correlations of retained variables in crypts lamina propria 
+```{r}
+
+ai_scaled <- fromJSON(paste0(explore_features_dir, "ai_features_robust_scaled.json"))
+#Filter out junk by removing observations with improbable values in epi/lp ratio + skip junctional distance
+
+lp_crypts <- ai_scaled %>% filter(compartment == "Lamina propria" & layer == "Crypts") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = scaled
+  ) %>%
+  filter(`Epithelium-Lamina propria ratio` < 0.65,
+         `Lymphocyte distance (mean)` < 1.32) %>%
+  select(-`Junctional distance (median)`)
+
+lp_crypts_adjusted_labels <- lp_crypts %>%
+  rename(`Epithelium\nLP-ratio` = `Epithelium-Lamina propria ratio`,
+         `Lymphocyte\ndistance\nmean` = `Lymphocyte distance (mean)`,
+         `Lymphocyte\ndistance\nsd` = `Lymphocyte distance (sd)`)
+ 
+
+
+
+#Plot pairwise correlations
+pairwise_plot <- pairwise_correlations(lp_crypts_adjusted_labels)
+
+ggsave(
+  filename = file.path(cluster_prep_dir, "lp_crypts_pair_matrix.png"),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+```
+
+#### Prepare for clustering of crypts lamina propria 
+Remove highly correlated variables and explore PCAs, elbow and silhouettes to set K for clustering
+```{r}
+
+#Remove highly correlated values
+lp_crypts_select <- lp_crypts %>%
+  select(- `% in clusters`, - Count)
+  
+
+lp_crypts_cluster_prep <- prepare_for_clustering(lp_crypts_select, prefix = "Crypts - lamina propria")
+```
+
+#### Cluster and explore clusters for crypts lamina propria 
+
+```{r}
+lp_crypts_unscaled_filtered <- lp_crypts_unscaled %>% 
+  filter(image_fragment_mucosa_name %in% lp_crypts$image_fragment_mucosa_name)
+
+clusters <- prepare_cluster_summary(lp_crypts_cluster_prep, best_k = 8, lp_crypts_unscaled_filtered, prefix = "Crypts - lamina propria")
+
+cluster_assignments <- clusters$cluster_assignments
+cluster_summary <- clusters$cluster_summary
+```
+
+
+
+#### Villi - lp Check pairwise correlations of retained variables 
+```{r}
+ai_scaled <- fromJSON(paste0(explore_features_dir, "ai_features_robust_scaled.json"))
+#Filter out junk by removing observations with improbable values in epi/lp ratio + skip junctional distance
+
+lp_villi <- ai_scaled %>% filter(compartment == "Lamina propria" & layer == "Crypts") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = scaled
+  ) %>%
+  filter(`Epithelium-Lamina propria ratio` < 10) %>%
+  select(-`Junctional distance (median)`)
+
+#Plot pairwise correlations
+pairwise_plot <- pairwise_correlations(lp_villi)
+
+ggsave(
+  filename = file.path(explore_features_dir, "lp_villi_pair_matrix.png"),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+
+
+
+```
+
+#### Villi lp Prepare for clustering
+Remove highly correlated variables and explore PCAs, elbow and silhouettes to set K for clustering
+```{r}
+
+#Remove highly correlated values
+lp_villi_select <- lp_villi %>%
+  select(- `% in clusters`, - Count)
+  
+
+lp_villi_cluster_prep <- prepare_for_clustering(lp_villi_select, prefix = "Villi - lamina propria")
+```
+
+
+#### Villi lpCluster and explore clusters
+```{r}
+lp_villi_unscaled_filtered <- lp_villi_unscaled %>% 
+  filter(image_fragment_mucosa_name %in% lp_villi_select$image_fragment_mucosa_name)
+
+clusters <- prepare_cluster_summary(lp_villi_cluster_prep, best_k = 6, lp_villi_unscaled_filtered, prefix = "Villi - lamina propria")
+
+cluster_assignments <- clusters$cluster_assignments
+cluster_summary <- clusters$cluster_summary
+```
+
+
+
+
+#### Check pairwise correlations of retained variables in villi eptihelium
+```{r}
+
+ai_scaled <- fromJSON(paste0(explore_features_dir, "ai_features_robust_scaled.json"))
+#Filter out junk by removing observations with improbable values in epi/lp ratio + skip junctional distance
+
+epi_villi <- ai_scaled %>% filter(compartment == "Epithelium" & layer == "Villi") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = scaled
+  )
+
+#Plot pairwise correlations
+pairwise_plot <- pairwise_correlations(epi_villi)
+
+ggsave(
+  filename = file.path(explore_features_dir, "epi_villi_pair_matrix.png"),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+```
+
+#### Prepare for clustering
+Remove highly correlated variables and explore PCAs, elbow and silhouettes to set K for clustering
+```{r}
+
+#Remove highly correlated values
+epi_villi_select <- epi_villi %>%
+  select(- `% in clusters`, - Count)
+  
+
+epi_villi_cluster_prep <- prepare_for_clustering(epi_villi_select, prefix = "Villi - epithelium")
+```
+
+#### Cluster and explore clusters in villi eptihelium
+```{r}
+epi_villi_unscaled_filtered <- epi_villi_unscaled %>% 
+  filter(image_fragment_mucosa_name %in% epi_villi_select$image_fragment_mucosa_name)
+
+clusters <- prepare_cluster_summary(epi_villi_cluster_prep, best_k = 6, epi_villi_unscaled_filtered, prefix = "Villi - epithelium")
+
+cluster_assignments <- clusters$cluster_assignments
+cluster_summary <- clusters$cluster_summary
+```
+
+
+
+
+#### Check pairwise correlations of retained variables in crypts epithelium
+```{r}
+
+ai_scaled <- fromJSON(paste0(explore_features_dir, "ai_features_robust_scaled.json"))
+#Filter out junk by removing observations with improbable values in epi/lp ratio + skip junctional distance
+
+epi_crypts <- ai_scaled %>% filter(compartment == "Epithelium" & layer == "Crypts") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = scaled
+  )
+
+#Plot pairwise correlations
+pairwise_plot <- pairwise_correlations(epi_crypts)
+
+ggsave(
+  filename = file.path(explore_features_dir, "epi_crypts_pair_matrix.png"),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+```
+
+#### Prepare for clustering - crypts epithelium
+Remove highly correlated variables and explore PCAs, elbow and silhouettes to set K for clustering
+```{r}
+
+#Remove highly correlated values
+epi_crypts_select <- epi_crypts %>%
+  select(- `% in clusters`, - Count)
+  
+
+epi_crypts_cluster_prep <- prepare_for_clustering(epi_crypts_select, prefix = "Crypts - epithelium")
+```
+
+#### Cluster and explore clusters - in crypts epithelium
+```{r}
+epi_crypts_unscaled_filtered <- epi_crypts_unscaled %>% 
+  filter(image_fragment_mucosa_name %in% epi_crypts_select$image_fragment_mucosa_name)
+
+clusters <- prepare_cluster_summary(epi_crypts_cluster_prep, best_k = 8, epi_crypts_unscaled_filtered, prefix = "Crypts - epithelium")
+
+cluster_assignments <- clusters$cluster_assignments
+cluster_summary <- clusters$cluster_summary
+```
+
+
+
+### Explore features for all compartments
+#### Univariable visual exam
+Use variables id:d on univariate clustering
+```{r}
+
+ai_unscaled <- fromJSON(paste0(explore_features_dir, "ai_features_unscaled.json"))
+
+
+all_unscaled <- ai_unscaled %>% 
+  filter(feature != "Count" & 
+          feature != "% in clusters" &
+           feature != "Junctional distance (median)")%>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = value
+  ) %>%
+  filter(`Villi_Lamina propria_Epithelium-Lamina propria ratio` < 10,
+         `Crypts_Lamina propria_Epithelium-Lamina propria ratio` < 5) 
+
+
+all_variables <- setdiff(names(all_unscaled), "image_fragment_mucosa_name")
+
+for (var in all_variables){
+  p <- plot_hist_density_stats(all_unscaled, var) + ggtitle(NULL)
+  
+  ggsave(
+  filename = paste0(explore_features_dir, var, "_distribution.png"),   
+  plot     = p,
+  width    = 3.5,        # inches
+  height   = 1.4,     # inches
+  units    = "in",
+  dpi      = 300 )  
+  
+  
+}
+```
+
+
+
+#### Check pairwise correlations of retained variables 
+```{r}
+
+ai_scaled <- fromJSON(paste0(explore_features_dir, "ai_features_robust_scaled.json"))
+#Filter out junk by removing observations with improbable values in epi/lp ratio + skip junctional distance
+
+all <- ai_scaled %>% filter(feature != "Count" & 
+          feature != "% in clusters" &
+           feature != "Junctional distance (median)")%>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = scaled
+  ) %>%
+  filter(`Villi_Lamina propria_Epithelium-Lamina propria ratio` < 10,
+         `Crypts_Lamina propria_Epithelium-Lamina propria ratio` < 5) 
+
+all_for_pw <- all %>%
+  rename(`Villi\nEpi-Lp` = `Villi_Lamina propria_Epithelium-Lamina propria ratio`,
+         `Crypts\nEpi-lp` = `Crypts_Lamina propria_Epithelium-Lamina propria ratio`,
+         `Villi\nEpi\nDist\nmean` = `Villi_Epithelium_Lymphocyte distance (mean)`,
+         `Villi\nEpi\nDist\nsd` = `Villi_Epithelium_Lymphocyte distance (sd)`,
+         `Crypts\nEpi\nDist\nmean` = `Crypts_Epithelium_Lymphocyte distance (mean)`,
+         `Crypts\nEpi\nDist\nsd` = `Crypts_Epithelium_Lymphocyte distance (sd)`,
+         `Villi\nlp\nDist\nmean` = `Villi_Lamina propria_Lymphocyte distance (mean)`,
+         `Villi\nlp\nDist\nsd` = `Villi_Lamina propria_Lymphocyte distance (sd)`,
+         `Crypts\nlp\nDist\nmean` = `Crypts_Lamina propria_Lymphocyte distance (mean)`,
+         `Crypts\nlp\nDist\nsd` = `Crypts_Lamina propria_Lymphocyte distance (sd)`,
+         )
+#Plot pairwise correlations
+pairwise_plot <- pairwise_correlations(all_for_pw)
+
+ggsave(
+  filename = file.path(explore_features_dir, "allpair_matrix.png"),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+
+write_json(all, paste0(explore_features_dir, "selected_ai_features_all_compartments_scaled_b1.json"), pretty = TRUE)
+```
+
+
+#### Prepare for clustering all
+explore PCAs, elbow and silhouettes to set K for clustering
+```{r}
+all_cluster_prep <- prepare_for_clustering(all, prefix = "")
+```
+
+
+#### Cluster and explore clusters for  all
+
+```{r}
+all_unscaled_filtered <- all_unscaled %>% 
+  filter(image_fragment_mucosa_name %in% all$image_fragment_mucosa_name)
+
+clusters <- prepare_cluster_summary(all_cluster_prep, best_k = 8, all_unscaled_filtered, prefix = "")
+
+cluster_assignments <- clusters$cluster_assignments
+cluster_summary <- clusters$cluster_summary
+```
+
+### Try db_scan to identify non_mucosal_fragments
+There are observations in my sample that are not true mucosal segments.
+In cross-checking the initial k-means with images, I suspect these are generally singltons (not close to any neigbor). This chunk to see if an initial db_scan clustering can separate them. 
+ - limit 2 - possibly try to include lymphocyte area and see if any better
+```{r}
+library(RANN)
+library(dbscan)
+library(writexl)
+
+all_scaled <- fromJSON(paste0(explore_features_dir, "selected_ai_features_all_compartments_scaled_b1.json"))
+
+all_cluster_prep <- prepare_for_clustering(all_scaled, prefix = "")
+
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 3, eps = 1.5, minPts = 2)
+
+write_xlsx(db_sum, paste0(explore_features_dir, "db_template_pc3_eps_1.5_minPts_2.xlsx"))
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 4, eps = 1.5, minPts = 2)
+write_xlsx(db_sum, paste0(explore_features_dir, "db_template_pc4_eps_1.5_minPts_2.xlsx"))
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 3, eps = 4, minPts = 2)
+write_xlsx(db_sum, paste0(explore_features_dir, "db_template_pc3_eps_4_minPts_2.xlsx"))
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 3, eps = 3, minPts = 2)
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 2, eps = 1.5, minPts = 2)
+
+db_sum <- db_cluster_summary(all_cluster_prep, pc_n = 5, eps = 1.5, minPts = 2)
+write_xlsx(db_sum, paste0(explore_features_dir, "db_template_pc5_eps_1.5_minPts_2.xlsx"))
+```
+
+
+```{r}
+
+nn_pca <- function(all_cluster_prep, PC_n = 3 ){ #number of pc for clustering
+                         
+  pca <- all_cluster_prep$pca
+  pca_scores <- as.data.frame(pca$x[, 1:PC_n])
+  
+  #check distribution of nn points to decide dbscan
+  nn_result <- RANN::nn2(data = pc_scores, k = 2)
+  nearest_distances <- nn_result$nn.dists[, 2]
+  df_nn <- pc_scores %>%
+    mutate(nearest_neighbor_dist = nearest_distances)
+  
+  nn_pca_plot <- ggplot(df_nn, aes(x = nearest_neighbor_dist)) +
+    geom_histogram(binwidth = 0.1) +  
+  scale_x_continuous(
+    breaks = scales::pretty_breaks(n = 10)) +
+  theme_bw(base_size = 9) +
+  labs(
+    title = "Distance to Nearest Neighbor in PCA Space",
+    x = "Nearest Neighbor Distance",
+    y = "Count"
+  )
+  return(nn_pca_plot)
+}
+
+#Plot distance to nearest neigbor in pca space
+nn_pca_plot <- nn_pca(all_cluster_prep)
+nn_pca_plot
+
+dbscan_plots <- function(all_cluster_prep,
+                         eps_vals,
+                         minPts = 2,
+                         PC_n = 3) {
+  results <- list()
+  id_df <- all_cluster_prep$id_df
+  pca <- all_cluster_prep$pca
+  pca_scores <- as.data.frame(pca$x[,1:PC_n])
+  
+  for(eps in eps_vals){
+    db <- dbscan(pca_scores, eps = eps, minPts = minPts)
+    df_plot <- pca_scores %>%
+      mutate(cluster = as.factor(db$cluster),
+             image_fragment_mucosa_name = id_df$image_fragment_mucosa_name,
+             eps = eps,
+             minPts = minPts)
+  }
+}
+  
+  
+#Try dbscan for different thresholds
+eps_vals = c(0.5, 0.75, 1, 1.25, 1.5)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

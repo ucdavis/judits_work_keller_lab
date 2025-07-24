@@ -1,0 +1,725 @@
+---
+title: "explore_unscaled"
+author: "Wulcan"
+date: "2025-07-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+Screen the unscaled features for biological interpretability and possible 
+thresholds. All screenings were done in batch 1. 
+
+###  Libraries and functions
+```{r, message=FALSE, warning=FALSE}
+library(jsonlite)
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(scales) #allows pretty breaks on x axis
+library(GGally) #pair plot matrix
+
+to_box <- "~/Library/CloudStorage/Box-Box/"
+
+parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_ai_features/")
+
+explore_unscaled_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_unscaled/")
+
+sub_name_translation <- c(
+  villi_lp   = "Villi Lamina propria",
+  crypts_lp  = "Crypts Lamina propria",
+  villi_epi  = "Villi Epithelium",
+  crypts_epi = "Crypts Epithelium"
+)
+
+
+# Custom renaming function: ONLY feature name
+rename_features_only <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    if (length(parts) < 3) return(var)  # Leave ID variable alone
+
+    feature_raw <- parts[3]
+
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clusters",
+      feature_raw == "Size (mean)" ~ "Mean\nsize",
+      feature_raw == "Size (sd)" ~ "SD\nsize",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean\nlymphocyte\ndistance",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD\nlymphocyte\ndistance",
+      str_detect(feature_raw, "Junctional distance \\(median\\)") ~ "Median\njunctional\ndistance",
+      TRUE ~ feature_raw
+    )
+    feature
+  }, USE.NAMES = FALSE)
+}
+ 
+rename_custom_vars <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    # If not a 3-part name, return original
+    if (length(parts) < 3) return(var)
+
+    # Original components
+    layer <- parts[1]
+    compartment <- parts[2]
+    feature_raw <- parts[3]
+
+    # Abbreviate compartment
+    compartment_abbr <- case_when(
+      compartment == "Epithelium" ~ "Epi",
+      compartment == "Lamina propria" ~ "LP",
+      TRUE ~ compartment
+    )
+
+    # Custom feature name abbreviation
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clust",
+      feature_raw == "Size (mean)" ~ "Mean size",
+      feature_raw == "Size (sd)" ~ "SD size",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean lc dist",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD lc dist",
+      str_detect(feature_raw, "Junctional distance \\(median\\)") ~ "Median jun dist",
+      TRUE ~ feature_raw
+    )
+
+    paste0(feature, "\n", layer, " ", compartment_abbr)
+  }, USE.NAMES = FALSE)
+}
+
+rename_raw_features <- function(feature_raw_vec) {
+  sapply(feature_raw_vec, function(feature_raw) {
+    case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epithelium-to-Lamina propria ratio",
+      feature_raw == "% in clusters" ~ "Clusters",
+      feature_raw == "Size (mean)" ~ "Mean size",
+      feature_raw == "Size (sd)" ~ "SD size",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean lymphocyte distance",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD lymphocyte distance",
+      str_detect(feature_raw, "Junctional distance \\(median\\)") ~ "Median junctional distance",
+      TRUE ~ feature_raw
+    )
+  }, USE.NAMES = FALSE)
+}
+
+
+plot_hist_density_stats <- function(.data,
+                                    value_var,
+                                    n_breaks = 12,         
+                                    title_prefix = "",
+                                    x_label = NULL,
+                                    x_limits = NULL) {
+  
+  x_lab <- if (is.null(x_label)) value_var else x_label
+  
+  stats <- summarise(.data,
+                     median_val = median(.data[[ value_var ]], na.rm = TRUE),
+                     q1        = quantile(.data[[ value_var ]], 0.25, na.rm = TRUE),
+                     q3        = quantile(.data[[ value_var ]], 0.75, na.rm = TRUE),
+                     mean_val  = mean(.data[[ value_var ]], na.rm = TRUE),
+                     sd_val    = sd  (.data[[ value_var ]], na.rm = TRUE)) |>
+           mutate(iqr       = q3 - q1,
+                  upper_2sd = mean_val + 2 * sd_val,
+                  lower_2sd = mean_val - 2 * sd_val)
+
+  ggplot(.data, aes(x = .data[[ value_var ]])) +
+    geom_histogram(aes(y = ..density..), bins = 30,
+                   fill = "grey80", colour = "black", alpha = 0.6) +
+    geom_density(colour = "blue", linewidth = 0.7) +
+
+    # reference lines
+    geom_vline(data = stats, aes(xintercept = median_val),  colour = "orange") +
+    geom_vline(data = stats, aes(xintercept = q1),  colour = "blue", linetype = "dashed") +
+    geom_vline(data = stats, aes(xintercept = q3),  colour = "blue", linetype = "dashed") +
+   
+
+    # nicer x-axis tick density
+    scale_x_continuous(breaks = pretty_breaks(n = n_breaks),
+                       limits = x_limits) +
+
+    labs(title = title_prefix,
+       x = x_lab,
+       y = "Density") +
+    theme_bw(base_size = 9) +
+    theme(plot.title = element_text(size = 10, face = "bold")) +
+
+    # summary text in the corner
+    geom_text(data = stats,
+              aes(x = Inf, y = Inf,
+                  label = paste0("Median = ", round(median_val, 2), "\n",
+                                 "q1 = ", round(q1, 2), "\n",
+                                 "q3 = ", round(q3, 2), "\n")),
+              hjust = 1.1, vjust = 1.1, size = 3)
+}
+
+break_long_labels <- function(name, cutoff1 = 15, cutoff2 = 30) {
+  n <- nchar(name)
+  
+  if (n <= cutoff1) return(name)
+  
+  # Find all positions of space or hyphen
+  matches <- gregexpr("[- ]", name)[[1]]
+  
+  if (n > cutoff2 && length(matches) >= 2 && matches[2] > 0) {
+    # If > 40 chars, break at second match
+    pos <- matches[2]
+  } else if (length(matches) >= 1 && matches[1] > 0) {
+    # Otherwise break at first match
+    pos <- matches[1]
+  } else {
+    return(name)  # No space or dash found
+  }
+  
+  paste0(
+    substr(name, 1, pos - 1),
+    "\n",
+    substr(name, pos + 1, n)
+  )
+}
+
+pairwise_correlations <- function(df) {
+  
+  break_long_labels <- function(name, cutoff1 = 20, cutoff2 = 40) {
+    n <- nchar(name)
+    if (n <= cutoff1) return(name)
+    
+    matches <- gregexpr("[- ]", name)[[1]]
+    
+    if (n > cutoff2 && length(matches) >= 2 && matches[2] > 0) {
+      pos <- matches[2]
+    } else if (length(matches) >= 1 && matches[1] > 0) {
+      pos <- matches[1]
+    } else {
+      return(name)
+    }
+    
+    paste0(substr(name, 1, pos - 1), "\n", substr(name, pos + 1, n))
+  }
+  
+  df_clean <- if ("image_fragment_mucosa_name" %in% names(df)) {
+    df %>% select(-image_fragment_mucosa_name)
+  } else {
+    df
+  }
+  
+  colnames(df_clean) <- sapply(colnames(df_clean), break_long_labels)
+  
+  p <- GGally::ggpairs(
+    df_clean,
+    lower = list(continuous = GGally::wrap("points", alpha = .5, size = .6)),
+    upper = list(continuous = GGally::wrap("cor", method = "spearman", digits = 2, size = 3)),
+    diag  = list(continuous = "densityDiag")
+  ) + 
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 6),
+      axis.text.y = ggplot2::element_text(size = 6)
+    )
+  
+  return(p)
+}
+```
+
+
+### Explore unscaled features batch 1
+Features explored by compartment and layer. 
+
+#### Issues/Deviations
+- Distance to closest junction seems to correlate more with orientation then biology
+- Epithelium-to-lamina propria ratio has high implausible outliers in crypts
+- Some features were assessed prior to cleaning up script, assessments read in and added here to avoid 
+redoing manual checks
+
+```{r}
+subset_name <- "batch_1"
+unscaled  <- fromJSON(paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"))
+
+# Screen variables in LP crypts
+
+lp_crypts_unscaled <- unscaled %>% filter(compartment == "Lamina propria" & layer == "Crypts") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = value
+  )
+
+lp_crypts_variables <- setdiff(names(lp_crypts_unscaled), "image_fragment_mucosa_name")
+
+for (var in lp_crypts_variables){
+  p <- plot_hist_density_stats(lp_crypts_unscaled, var) 
+  
+  ggsave(
+  filename = paste0(explore_unscaled_dir, "crypts_lp_", var, "_", subset_name, ".png"),   
+  plot     = p,
+  width    = 3.5,        # inches
+  height   = 1.7,     # inches
+  units    = "in",
+  dpi      = 300 )  
+  
+  
+}
+
+#Read in segments already assessed and add to template to avioid double assessments
+assessed_wsis <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/input/lp_villi_check_dist_extremes.xlsx") %>% 
+  select(image_fragment_mucosa_name,
+         si_mucosa,
+         ok_quality,
+         ok_ai_performance,
+         Comment)
+
+lp_crypts_template <- lp_crypts_unscaled %>%
+  left_join(assessed_wsis)
+
+write_xlsx(lp_crypts_template, paste0(explore_unscaled_dir, "lp_crypts_outliers_",subset_name,  ".xlsx"))
+
+# Villi LP
+
+
+lp_villi_unscaled <- unscaled %>% filter(compartment == "Lamina propria" & layer == "Villi") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = value
+  )
+
+lp_villi_variables <- setdiff(names(lp_villi_unscaled), "image_fragment_mucosa_name")
+
+for (var in lp_villi_variables){
+  p <- plot_hist_density_stats(lp_villi_unscaled, var)
+  
+  ggsave(
+  filename = paste0(explore_unscaled_dir, "villi_lp_", var, "_", subset_name, ".png"),   
+  plot     = p,
+  width    = 3.5,        # inches
+  height   = 1.7,     # inches
+  units    = "in",
+  dpi      = 300 )  
+  
+  
+}
+
+#make template for outlier assessement read in previous assessment to avoid double assessment
+outliers_lp_crypts <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/input/lp_crypts_outliers_reviewed.xlsx") %>% 
+  select(image_fragment_mucosa_name, si_mucosa, ok_ai_performance, Comment)
+
+lp_villi_template <- lp_villi_unscaled %>%
+  arrange(desc(`Lymphocyte distance (mean)`)) %>%
+  left_join(outliers_lp_crypts)
+
+write_xlsx(lp_villi_template, paste0(explore_unscaled_dir, "lp_villi_outliers_",subset_name,  ".xlsx"))
+
+#VILLI EPITHELIUM
+
+epi_villi_unscaled <- unscaled %>% filter(compartment == "Epithelium" & layer == "Villi") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = value
+  )
+
+epi_villi_variables <- setdiff(names(epi_villi_unscaled), "image_fragment_mucosa_name")
+
+for (var in epi_villi_variables){
+  p <- plot_hist_density_stats(epi_villi_unscaled, var)
+  
+  ggsave(
+  filename = paste0(explore_unscaled_dir, "villi_epi_", var, "_", subset_name, ".png"),   
+  plot     = p,
+  width    = 3.5,        # inches
+  height   = 1.7,     # inches
+  units    = "in",
+  dpi      = 300 )  
+  
+  
+}
+
+#make template for outlier assessement read in previous assessment to avoid double assessment
+outliers_lp_crypts <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/input/lp_crypts_outliers_reviewed.xlsx") %>% 
+  select(image_fragment_mucosa_name, si_mucosa, ok_ai_performance, Comment)
+
+epi_villi_template <- epi_villi_unscaled %>%
+  arrange(desc(`Lymphocyte distance (mean)`)) %>%
+  left_join(outliers_lp_crypts)
+
+write_xlsx(epi_villi_template, paste0(explore_unscaled_dir, "epi_villi_outliers_",subset_name,  ".xlsx"))
+
+#Crypts epithelium
+
+epi_crypts_unscaled <- unscaled %>% filter(compartment == "Epithelium" & layer == "Crypts") %>%
+  select(-layer, -compartment)  %>%
+  pivot_wider(
+    names_from = feature,
+    values_from = value
+  )
+
+
+epi_crypts_variables <- setdiff(names(epi_crypts_unscaled), "image_fragment_mucosa_name")
+
+for (var in epi_crypts_variables){
+  p <- plot_hist_density_stats(epi_crypts_unscaled, var)
+  
+  ggsave(
+  filename = paste0(explore_unscaled_dir, "crypts_epi_", var, "_", subset_name, ".png"),   
+  plot     = p,
+  width    = 3.5,        # inches
+  height   = 1.7,     # inches
+  units    = "in",
+  dpi      = 300 )  
+
+}
+
+#make template for outlier assessement read in previous assessment to avoid double assessment
+outliers_epi_villi <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/input/epi_villi_outliers_reviewed.xlsx") %>% 
+  select(image_fragment_mucosa_name, si_mucosa, ok_ai_performance, Comment)
+
+epi_crypts_template <- epi_crypts_unscaled %>%
+  arrange(desc(`Lymphocyte distance (mean)`)) %>%
+  left_join(outliers_epi_villi)
+
+write_xlsx(epi_crypts_template, paste0(explore_unscaled_dir, "epi_crypts_outliers_",subset_name,  ".xlsx"))
+```
+
+
+#### Visual assessments of outliers
+Separate templates for each layer/compartment combinations were printed,
+uploaded to google sheets and assessed. For each new, the results from the
+previous were loaded in, to avoid having to reassess non-mucosal segments. 
+The separate google sheets, here:
+https://drive.google.com/drive/folders/18ZkYDUykvt_JNy2Gub1ktGOIhd2ny6Zd?usp=sharing
+
+- **Epithelium/lamina propria ratio**
+*Untrimmed range is 0.0006 to 2.5, (0.001 to 320 untransformed) in crypts and 0.0024 to 467 (0.001 - 2.67 log-transformed) in villi*
+In crypts: 
+  - > 0.65 (non-transformed 3.5) - always junk (not mucosa or poor ai performance with FP epithelium) 
+  - 0.47 - 0.65 (2-3.5 non-transformed) colon or intususceptions with proliferative crypt epithelium
+  - < 0.01 (0.02 non-transformed) all junk ( not si mucosa)
+  - 0.01 - 0.07 (0.02 - 0.17 non-transformed) transmural lymphomas including large chunks of submucosa)
+  - cutoff > 0.65 (3.5 nontransformed) (conservative)
+  
+In villi:
+  - Everything above 30 is junk (27, log-transformed 1.45) - higher then for crypts  
+  - Everything below 0.1 is junk (log-transformed 0.04, higher then crypts - infiltrate here does not obliterate epithelium in the same way)
+
+- **Lymphocyte distance (mean)** 
+In crypts lamina propria: Untrimmed range between 0 and 1.83 (log distance value max corresponds to 66.6 um)
+  - >1.25 (corresponds to ~16.7 um) is either junk (non-si or poor ai performance in
+  a LCL)
+  - cutoff > 1.32 - corresponds to 20 um  (conservative)
+In villi lamina propria: *Untrimmed range is 0.76 to 1.93* (corresponds to  4.8 to -84.1um untransformed)
+  - everything > 1.32 corresponds to 20 um  is junk 
+  
+In epithelium: 
+Values up to > 1.83 (66um can be accurate) (few are over that and are sorted by other threshold) - not useful as threshold
+
+###  Process batch_1
+Process batch 1 by subsetting biological improbabilities with threshold from above
+```{r}
+subset_name <- "batch_1"
+unscaled  <- fromJSON(paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"))
+
+unscaled_wide <- unscaled %>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = value
+  )
+
+biological_improbabilities_and_nas <- unscaled_wide %>%
+  filter(`Crypts_Lamina propria_Epithelium-Lamina propria ratio` > 0.65 |
+           `Crypts_Lamina propria_Epithelium-Lamina propria ratio` < 0.01 |
+           `Villi_Lamina propria_Lymphocyte distance (mean)` > 1.32 |
+           `Crypts_Lamina propria_Lymphocyte distance (mean)` > 1.32 |
+           !complete.cases(.))
+
+filtered_unscaled <- unscaled_wide %>%
+  filter(!image_fragment_mucosa_name %in% biological_improbabilities_and_nas$image_fragment_mucosa_name)
+
+scaled <- fromJSON(paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"))
+scaled_wide <- scaled  %>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = scaled
+  )
+filtered_scaled <- scaled_wide %>%
+  filter(!image_fragment_mucosa_name %in% biological_improbabilities_and_nas$image_fragment_mucosa_name)
+
+write_json(biological_improbabilities_and_nas, paste0(explore_unscaled_dir, "improbabilities_", subset_name, ".json"), pretty=TRUE)
+
+write_json(filtered_unscaled, paste0(explore_unscaled_dir, "filtered_unscaled_", subset_name, ".json"), pretty=TRUE)
+
+write_json(filtered_scaled, paste0(explore_unscaled_dir, "filtered_scaled_", subset_name, ".json"), pretty=TRUE)          
+### Plot distributions of filtered values
+filtered_unscaled_var <- setdiff(names(filtered_unscaled), "image_fragment_mucosa_name")
+
+for (var in filtered_unscaled_var) {
+
+  # Split variable name into parts
+  parts <- strsplit(var, "_")[[1]]
+  
+  # Handle potential 3+ part variable names (some features have underscores)
+  if (length(parts) >= 3) {
+    layer <- parts[1]
+    compartment <- parts[2]
+    feature <- paste(parts[3:length(parts)], collapse = "_")  
+  } else {
+    layer <- compartment <- feature <- var
+  }
+
+  # Construct title and x-axis label
+  title_prefix <- paste(layer, compartment, sep = " - ")
+  x_axis_label <- feature
+
+  # Plot and save
+  p <- plot_hist_density_stats(
+  .data = filtered_unscaled,
+  value_var = var,
+  title_prefix = title_prefix,
+  x_label = x_axis_label)
+
+  ggsave(
+    filename = paste0(explore_unscaled_dir, var, "_", subset_name, "_filtered.png"),
+    plot = p,
+    width = 3.5,
+    height = 1.7,
+    units = "in",
+    dpi = 300
+  )
+}
+
+```
+
+### Check pairwise correlations (by layer and compartment) for scaled -  batch 1
+```{r}
+subset_name <- "batch_1"
+explore_unscaled_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_unscaled/")
+
+cluster_prep_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/cluster_prep/")
+
+filtered_scaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_scaled_", subset_name, ".json")) 
+
+# Define base ID
+id_col <- "image_fragment_mucosa_name"
+
+# Get all column names
+all_vars <- names(filtered_scaled)
+
+# Define filtering patterns for each group
+group_patterns <- list(
+  villi_lp   = "Villi_Lamina propria_",
+  crypts_lp  = "Crypts_Lamina propria_",
+  villi_epi  = "Villi_Epithelium_",
+  crypts_epi = "Crypts_Epithelium_"
+)
+
+# Create a list to hold split dataframes
+split_frames <- list()
+
+# Loop over each pattern
+for (group in names(group_patterns)) {
+  pattern <- group_patterns[[group]]
+  
+  selected_vars <- all_vars[grepl(paste0("^", pattern), all_vars)]
+  df_group <- filtered_scaled %>%
+    select(all_of(id_col), all_of(selected_vars)) %>%
+    rename_with(rename_features_only, .cols = all_of(selected_vars))
+  
+  split_frames[[group]] <- df_group
+}
+
+sub_names <- names(split_frames)
+
+for (sub_name in sub_names){
+  df <- split_frames[[sub_name]]
+  
+  tit <- sub_name_translation[[sub_name]]
+  
+  pairwise_plot <- pairwise_correlations(df) + ggtitle(tit)
+  
+  ggsave(
+  filename = file.path(paste0(explore_unscaled_dir, sub_name,"_pairs_", subset_name, ".png")),
+  plot     = pairwise_plot,
+  width    = 7, height = 6.8, units = "in", dpi = 300
+)
+  
+  
+}
+
+# Define compartments and abbreviations
+compartments <- c("Villi_Lamina propria_", "Crypts_Lamina propria_", 
+                  "Villi_Epithelium_", "Crypts_Epithelium_")
+
+compartment_abbr <- c("Villi LP", "Crypts LP", "Villi Epi", "Crypts Epi")
+
+# Extract unique features
+feature_vars <- setdiff(names(filtered_scaled), "image_fragment_mucosa_name")
+unique_features <- feature_vars %>%
+  str_replace("^(Villi|Crypts)_(Epithelium|Lamina propria)_", "") %>%
+  unique()
+
+# Loop over each feature
+for (feature in unique_features) {
+  
+  # Explicitly build column names to select
+  feature_cols <- paste0(compartments, feature)
+  
+  # Check columns exist to avoid select() error
+  missing_cols <- setdiff(feature_cols, names(filtered_scaled))
+  if(length(missing_cols) > 0){
+    warning(paste("Skipping feature due to missing columns:", paste(missing_cols, collapse = ", ")))
+    next
+  }
+  
+  df_feature <- filtered_scaled %>% 
+    select("image_fragment_mucosa_name", all_of(feature_cols)) %>%
+    drop_na()
+  
+  # Rename columns clearly
+  colnames(df_feature) <- c(
+    "image_fragment_mucosa_name",
+    paste(compartment_abbr)
+  )
+  
+  tit <- rename_raw_features(feature)
+
+  # Generate the correlation plot (excluding ID column)
+  pairwise_plot <- pairwise_correlations(df_feature %>% select(-image_fragment_mucosa_name)) +
+    ggtitle(tit)
+  
+  # Save plot
+  safe_feature_name <- str_replace_all(feature, "[^a-zA-Z0-9]", "_")
+  ggsave(
+    filename = file.path(explore_unscaled_dir, paste0("cross_compartment_", safe_feature_name, "_", subset_name, ".png")),
+    plot     = pairwise_plot,
+    width    = 7, height = 6.8, units = "in", dpi = 300
+  )
+}
+
+
+
+```
+
+###  Process batch_all (mock run with batch 1 data)
+Just to prepare figures -rerun this when you have all the data
+```{r}
+subset_name <- "all"
+unscaled  <- fromJSON(paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"))
+
+unscaled_wide <- unscaled %>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = value
+  )
+
+biological_improbabilities_and_nas <- unscaled_wide %>%
+  filter(`Crypts_Lamina propria_Epithelium-Lamina propria ratio` > 0.65 |
+           `Crypts_Lamina propria_Epithelium-Lamina propria ratio` > 0.01 |
+           `Villi_Lamina propria_Lymphocyte distance (mean)` > 1.32 |
+           `Crypts_Lamina propria_Lymphocyte distance (mean)` > 1.32 |
+           !complete.cases(.))
+
+filtered_unscaled <- unscaled_wide %>%
+  filter(!image_fragment_mucosa_name %in% biological_improbabilities_and_nas$image_fragment_mucosa_name)
+
+scaled <- fromJSON(paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"))
+scaled_wide <- scaled  %>%
+  pivot_wider(
+    names_from = c("layer", "compartment", "feature"),
+    values_from = scaled
+  )
+filtered_scaled <- scaled_wide %>%
+  filter(!image_fragment_mucosa_name %in% biological_improbabilities_and_nas$image_fragment_mucosa_name)
+
+write_json(biological_improbabilities_and_nas, paste0(explore_unscaled_dir, "improbabilities_", subset_name, ".json"), pretty=TRUE)
+
+write_json(filtered_unscaled, paste0(explore_unscaled_dir, "filtered_unscaled_", subset_name, ".json"), pretty=TRUE)
+
+write_json(filtered_scaled, paste0(explore_unscaled_dir, "filtered_scaled_", subset_name, ".json"), pretty=TRUE)          
+### Plot distributions of filtered values
+filtered_unscaled_var <- setdiff(names(filtered_unscaled), "image_fragment_mucosa_name")
+
+#Create a table with which variables I have for each feature
+feature_map <- filtered_unscaled_var |>
+  setNames(filtered_unscaled_var) |>
+  lapply(function(var) {
+    parts <- strsplit(var, "_")[[1]]
+    if (length(parts) >= 3) {
+      paste(parts[3:length(parts)], collapse = "_")
+    } else {
+      var
+    }
+  }) |>
+  stack() |>
+  rename(feature = values, var = ind)
+
+# Compute global x-lims for each featue (to keep x-axis the same between compartments/layers)
+feature_limits <- feature_map |>
+  group_by(feature) |>
+  summarise(
+    min_val = min(sapply(var, function(v) min(filtered_unscaled[[v]], na.rm = TRUE))),
+    max_val = max(sapply(var, function(v) max(filtered_unscaled[[v]], na.rm = TRUE)))
+  )
+
+feature_x_labels <- c(
+  "Count" = "Count per 1000 µm²",
+  "% in clusters" = "% in clusters",
+  "Epithelium-Lamina propria ratio" = "Log-transformed Epithelium-to-Lamina propria ratio",
+  "Lymphocyte distance (mean)" = "Mean log-transformed lymphocyte distance (µm)",
+  "Lymphocyte distance (sd)"   = "SD of log-transformed lymphocyte distance (µm)",
+  "Size (mean)" = "Mean nuclear area (µm²)",
+  "Size (sd)"   = "SD of nuclear area (µm²)",
+  "Junctional distance (median)" = "Median log-transformed junctional distance (um)"
+)
+
+for (i in seq_len(nrow(feature_map))) {
+  var <- feature_map$var[i]
+  feature <- feature_map$feature[i]
+
+  # 🧼 Ensure var is character (fixes the .data[[ value_var ]] error)
+  value_var <- as.character(var)
+
+  # Split into parts
+  parts <- strsplit(value_var, "_")[[1]]
+  layer <- parts[1]
+  compartment <- parts[2]
+  x_axis_label <- feature_x_labels[[feature]]
+  title_prefix <- paste(layer, compartment, sep = " - ")
+
+  # Get limits for this feature
+  xlim_vals <- feature_limits |>
+    filter(feature == !!feature) |>
+    select(min_val, max_val) |>
+    unlist()
+
+  # Plot
+  p <- plot_hist_density_stats(
+    .data = filtered_unscaled,
+    value_var = value_var,
+    title_prefix = title_prefix,
+    x_label = x_axis_label,
+    x_limits = xlim_vals
+  )
+
+  # Save
+  ggsave(
+    filename = paste0(explore_unscaled_dir, value_var, "_", subset_name, "_filtered.png"),
+    plot = p,
+    width = 3.5,
+    height = 1.7,
+    units = "in",
+    dpi = 300
+  )
+}
+
+
+
+```
+
+

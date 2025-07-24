@@ -1,0 +1,168 @@
+---
+title: "parse_ai_features"
+author: "Wulcan"
+date: "2025-07-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+Parse feature summaries from script lymphocyte_distribution_summaries to neat 
+ai_derived_features tables (unscaled and scaled versions)
+
+```{r}
+library(jsonlite)
+library(tidyverse) 
+
+to_box <- "~/Library/CloudStorage/Box-Box/"
+
+feature_summary_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/")
+
+parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_ai_features/")
+
+parse_feature_summaries<- function(feature_summary) {
+  
+  feature_summary <- feature_summary %>%
+    mutate(image_fragment_mucosa_name = paste(image_name, fragment_name, mucosa_name, sep = "_"))
+  
+  #Log transform epi-lp ratio and select features
+  ai_raw <- feature_summary %>%
+  mutate(villi_lamina_propria_epithelium_lamina_propria_ratio = log10(villi_epithelium_lamina_propria_ratio + 1),
+         crypts_lamina_propria_epithelium_lamina_propria_ratio = log10(crypts_epithelium_lamina_propria_ratio + 1)) %>%
+  select(image_fragment_mucosa_name,
+         villi_epithelium_lymphocyte_count_per_1000_um2,
+         crypts_epithelium_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_lymphocyte_count_per_1000_um2,
+         crypts_lamina_propria_lymphocyte_count_per_1000_um2,
+         villi_lamina_propria_epithelium_lamina_propria_ratio,
+         crypts_lamina_propria_epithelium_lamina_propria_ratio,
+         villi_epithelium_lymphocytes_pct_cluster_ge_3,
+         crypts_epithelium_lymphocytes_pct_cluster_ge_3,
+         villi_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         crypts_lamina_propria_lymphocytes_pct_cluster_ge_3,
+         villi_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_epithelium_lymphocytes_sd_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         villi_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_mean_log_closest_neighbor_um,
+         crypts_lamina_propria_lymphocytes_sd_log_closest_neighbor_um,
+         villi_epithelium_lymphocytes_median_log_closest_junction_um,
+         crypts_epithelium_lymphocytes_median_log_closest_junction_um,
+         villi_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         crypts_lamina_propria_lymphocytes_median_log_closest_junction_um,
+         villi_epithelium_lymphocytes_mean_measured_area_um2,
+         villi_epithelium_lymphocytes_sd_measured_area_um2,
+         crypts_epithelium_lymphocytes_mean_measured_area_um2,
+         crypts_epithelium_lymphocytes_sd_measured_area_um2,
+         villi_lamina_propria_lymphocytes_mean_measured_area_um2,
+         villi_lamina_propria_lymphocytes_sd_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_mean_measured_area_um2,
+         crypts_lamina_propria_lymphocytes_sd_measured_area_um2,
+         ) 
+  
+  #Pivot longer and rename
+    ai_features_unscaled <- ai_raw %>%
+      pivot_longer(
+        cols = matches("^(villi|crypts)_"),
+        names_to = c("layer", "compartment", "feature"),
+        names_pattern = "^(villi|crypts)_(epithelium|lamina_propria)_(.*)$",
+        values_to = "value") %>%
+      mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
+      mutate(feature = str_remove(feature, "^lymphocyte_")) %>%
+      mutate(layer = case_when(layer == "villi" ~ "Villi",
+                               layer == "crypts" ~ "Crypts",
+                               TRUE ~ layer),
+             compartment = case_when(compartment == "epithelium" ~ "Epithelium",
+                                     compartment == "lamina_propria" ~ "Lamina propria",
+                                     TRUE ~ compartment),
+             feature = case_when(
+               feature == "epithelium_lamina_propria_ratio" ~ "Epithelium-Lamina propria ratio",
+               feature == "count_per_1000_um2" ~ "Count",
+               feature == "pct_cluster_ge_3" ~ "% in clusters",
+               feature == "mean_log_closest_neighbor_um" ~ "Lymphocyte distance (mean)",
+               feature == "sd_log_closest_neighbor_um" ~ "Lymphocyte distance (sd)",
+               feature == "median_log_closest_junction_um" ~ "Junctional distance (median)",
+               feature == "mean_measured_area_um2" ~ "Size (mean)",
+               feature == "sd_measured_area_um2" ~ "Size (sd)",
+               TRUE ~ feature))
+    
+    ai_features_scaled <- ai_raw %>%
+        mutate(across(
+          where(is.numeric),
+          ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE)
+        )) %>%
+        pivot_longer(
+          cols = matches("^(villi|crypts)_"),
+          names_to = c("layer", "compartment", "feature"),
+          names_pattern = "^(villi|crypts)_(epithelium|lamina_propria)_(.*)$",
+          values_to = "scaled") %>%
+        mutate(feature = str_remove(feature, "^lymphocytes_")) %>%
+        mutate(feature = str_remove(feature, "^lymphocyte_")) %>%
+        mutate(layer = case_when(layer == "villi" ~ "Villi",
+                                 layer == "crypts" ~ "Crypts",
+                                 TRUE ~ layer),
+               compartment = case_when(compartment == "epithelium" ~ "Epithelium",
+                                       compartment == "lamina_propria" ~ "Lamina propria",
+                                       TRUE ~ compartment),
+               feature = case_when(
+                 feature == "epithelium_lamina_propria_ratio" ~ "Epithelium-Lamina propria ratio",
+                 feature == "count_per_1000_um2" ~ "Count",
+                 feature == "pct_cluster_ge_3" ~ "% in clusters",
+                 feature == "mean_log_closest_neighbor_um" ~ "Lymphocyte distance (mean)",
+                 feature == "sd_log_closest_neighbor_um" ~ "Lymphocyte distance (sd)",
+                 feature == "median_log_closest_junction_um" ~ "Junctional distance (median)",
+                 feature == "mean_measured_area_um2" ~ "Size (mean)",
+                 feature == "sd_measured_area_um2" ~ "Size (sd)",
+                 TRUE ~ feature))
+      
+    
+    return(list(
+    unscaled = ai_features_unscaled,
+    scaled = ai_features_scaled
+  ))
+}
+```
+
+### Parse batch 0 (grading sample)
+```{r}
+subset_name <- "grading_sample"
+
+feature_summaries <- fromJSON(paste0(feature_summary_dir, "lymphocyte_feature_summaries_", subset_name, ".json")) 
+                          
+parsed_features <- parse_feature_summaries(feature_summaries)
+
+write_json(parsed_features$unscaled, paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"), pretty =TRUE)
+
+write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"), pretty =TRUE)
+```
+
+### Parse batch 1
+```{r}
+subset_name <- "batch_1"
+
+feature_summaries <- fromJSON(paste0(feature_summary_dir, "lymphocyte_feature_summaries_", subset_name, ".json")) 
+                          
+parsed_features <- parse_feature_summaries(feature_summaries)
+
+write_json(parsed_features$unscaled, paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"), pretty =TRUE)
+
+write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"), pretty =TRUE)
+```
+
+### Parse all
+```{r}
+subset_name <- "all"
+
+feature_summaries <- fromJSON(paste0(feature_summary_dir, "lymphocyte_feature_summaries_", subset_name, ".json")) 
+                          
+parsed_features <- parse_feature_summaries(feature_summaries)
+
+write_json(parsed_features$unscaled, paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"), pretty =TRUE)
+
+write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"), pretty =TRUE)
+```
