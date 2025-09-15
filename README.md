@@ -8,7 +8,8 @@ The repo is organized into folders - many of which are their own git hub repos
 ### Subfolders:
 - **dissertation**
 This folder contains drafts, documents and forms related to the qualifying exam and 
-dissertation. For documentation in box only, the complete folder is under gitignore)
+dissertation. Also subfolders for posters and presentations, grants and applications
+JMW been involved in. For documentation in box only, the complete folder is under gitignore)
 - **fe_si_images** 
 This repo contains scripts, metadata files etc for all feline small intestinal
 images (WSIs)for the Keller lab. 
