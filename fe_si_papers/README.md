@@ -15,8 +15,9 @@ https://www.frontiersin.org/journals/veterinary-science/articles/10.3389/fvets.2
 JMW files pertainin to RRs rotation project. Published in Frontiers in Immunology
 November 2024, https://doi.org/10.3389/fimmu.2024.1438004
 
--**artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation**
-In progress. Intended for submission to Veterinary Pathology September 2025.
+-**ai_vet_dx_histopathology**
+Narrative review, scoping review and survey (ch 1 of disseration) submitted
+to Veterinary Pathology 2025-10-03
 
 -**lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies**
 In progress. Intended for submission to Veterinary Pathology October 2025
