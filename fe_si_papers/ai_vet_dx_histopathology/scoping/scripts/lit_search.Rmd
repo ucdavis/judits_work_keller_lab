@@ -1,0 +1,2395 @@
+---
+title: "lit_search"
+author: "Wulcan"
+date: "2025-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Semantic scholar 
+## CAB abstacts 
+
+## Objective
+The objective of this repo is to document the literature search for 
+the paper "Artificial intelligence in veterinary diagnostic histopathology".
+
+### Input
+- api key (instructions on how to get one are here: https://docs.google.com/presentation/d/1PwWraSGeOL0qDwtjUIOamBVnPhycoOOdFAnh2b5UxJ0/edit?usp=sharing))
+
+### Issues / deviations / commments
+- **ai_dx_bx_vet_v12** selected (see below) - search repeated at 2025-09-09 (same chunk added line)
+- The api scopus access relies on UCD access - only works on campus
+
+```{r libraries, directories, and functions, message=FALSE, warning=FALSE}
+library(bibliometrix)
+library (rscopus) #for scopus api
+library(tidyverse)
+library(jsonlite)
+library(writexl)
+library(readxl)
+
+
+to_box <- "~/Library/CloudStorage/Box-Box/"
+
+# Used to extract fields of interest from raw scopus results
+extract_fields <- function(entry) {
+  tibble(
+    scopus_id = entry[["dc:identifier"]],
+    title       = entry[["dc:title"]],
+    creator     = entry[["dc:creator"]],
+    journal     = entry[["prism:publicationName"]],
+    coverDate   = entry[["prism:coverDate"]],
+    doi         = entry[["prism:doi"]],
+    citedby     = entry[["citedby-count"]],
+    issn        = entry[["prism:issn"]]
+    
+
+  )
+}
+
+search_scopus <- function(api_key, search_objective, search_version, database, query) {
+  
+  # Run the search using provided query and API key
+  raw_results <- scopus_search(query, api_key = api_key)
+
+  # Convert results into a structured dataframe
+  cleaned_results <- map_dfr(raw_results$entries, extract_fields)
+  cleaned_results <- cleaned_results %>%
+  mutate(scopus_id = str_replace(`scopus_id`, "SCOPUS_ID:", ""))
+  
+
+  # Create metadata dataframe
+  metadata <- tibble(
+    database = database,
+    search_time = Sys.time(),
+    objective = search_objective,
+    version = search_version,
+    query = query,
+    n_hits = nrow(cleaned_results)
+  )
+  
+
+  # Return a list containing all three dataframes
+  return(list(
+    raw_results = raw_results,
+    cleaned_results = cleaned_results,
+    metadata = metadata
+  ))
+}
+
+#Used to retrieve abstracts for samples
+get_abstract <- function(id, api_key) {
+  Sys.sleep(0.5)  # Pause to avoid hitting rate limits
+  result <- tryCatch({
+    abstract_retrieval(id, 
+                         identifier = "scopus_id", 
+                         view = "FULL", 
+                         api_key = api_key, 
+                         verbose = FALSE)
+  }, error = function(e) {
+    message("Error retrieving abstract for ID ", id, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (!is.null(result) && !is.null(result$content)) {
+    abstract_text <- result$content$`abstracts-retrieval-response`$coredata$`dc:description`
+    if (!is.null(abstract_text)) {
+      return(abstract_text)
+    } else {
+      message("Abstract not found for ID ", id)
+    }
+  }
+  
+  return(NA_character_)
+}
+
+library(dplyr)
+library(purrr)
+
+sample_results <- function(results, sample_size, api_key) {
+  
+  # Set seed for reproducibility
+  set.seed(42)
+
+  # Generate a random sample from the results
+  sample <- results[sample(nrow(results), sample_size), ]
+
+  # Retrieve abstracts for the sample using scopus_id
+  sample <- sample %>%
+    mutate(
+      abstract = map_chr(scopus_id, ~ get_abstract(.x, api_key))
+    )
+
+  # Create template dataframe with required columns
+  template <- sample %>%
+    select(scopus_id, title, abstract) %>%
+    mutate(tp = "",
+           fp_comment = "",
+           fp_neg_term_suggestion = "",
+           tp_task_term_suggestion = "",
+           tp_disease_term_suggestion = "",
+           tp_ai_model_term_suggestion = "", 
+           tp_other_term_suggestion = ""
+    )
+
+  # Return a list with sample and template dataframes
+  return(list(
+    sample = sample,
+    template = template
+  ))
+}
+
+calculate_search_performance <- function(reviewed_sample, metadata) {
+  
+  # Calculate performance metrics from the reviewed sample
+  sample_n <- nrow(reviewed_sample)
+  sample_tp <- sum(reviewed_sample$tp == TRUE, na.rm = TRUE)
+  sample_fp <- sum(reviewed_sample$tp == FALSE, na.rm = TRUE)
+  sample_ppv <- sample_tp / (sample_tp + sample_fp)
+
+  # Update metadata dataframe with performance metrics
+  performance <- metadata %>%
+    mutate(
+      sample_n = sample_n,
+      sample_tp = sample_tp,
+      sample_fp = sample_fp,
+      sample_ppv = sample_ppv
+    )
+
+  # Return performance dataframe
+  return(performance)
+}
+
+
+calculate_search_se_ppv <- function(priors, results, reviewed, metadata) {
+  
+  #Calculate se based on the priors
+  priors_n <- nrow(priors)
+  priors_tp <- sum(priors$title %in% results$title)
+  priors_fn <-sum(!(priors$title %in% results$title))
+  priors_se <- priors_tp / (priors_tp + priors_fn)
+
+
+  # Calculate ppv from the reviewed sample
+  sample_n <- nrow(reviewed)
+  sample_tp <- sum(reviewed$tp == TRUE, na.rm = TRUE)
+  sample_fp <- sum(reviewed$tp == FALSE, na.rm = TRUE)
+  sample_ppv <- sample_tp / (sample_tp + sample_fp)
+  
+  
+
+  # Update metadata dataframe with performance metrics
+  performance <- metadata %>%
+    mutate(
+      priors_n = priors_n,
+      priors_tp = priors_tp,
+      priors_fn = priors_fn,
+      priors_se = priors_se,
+      sample_n = sample_n,
+      sample_tp = sample_tp,
+      sample_fp = sample_fp,
+      sample_ppv = sample_ppv
+    )
+
+  # Return performance dataframe
+  return(performance)
+}
+
+```
+
+
+### Search query refinement ai_dx_bx_vet
+This section contains documentation for a series of search versions performed to
+iteratively update the search query for the search objective.
+All search query refinement iterations were done in scopus (using the api interface)
+
+#### Search objective 
+Identify records about artificial intelligence applications for veterinary
+diagnostic histopathology ("ai_dx_bx_vet")
+
+#### Chunks
+Each search version will have a search chunk and most (with some exceptions) will have a performance chunk:
+- **scopus_search_ai_dx_bx_vet_<search_version>**
+This chunk documents the search, includes a "query rationale" on the reasoning behind the query
+and **outputs**:
+  - **results_fe_si_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  Includes basic search results (title, doi etc) but not abstracts
+  - **metadata_fe_si_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+Includes database, search_time, query and number of hits
+  - **sample_fe_si_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  For early versions, this is a random sample of size 10 (arbitrary sample size) that in addition to the data from
+  results includes the abstract. 
+  For later versions (closer to be considered for use) the sample size is set to the full number of hits.
+  - **template_fe_si_dx_bx_vet_<search_version>.xlsx** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  This is a template based on the sample, but parsed to be used for manual review.
+- **search_performance_ai_dx_bx_vet_<search_version>**.
+This chunk tests the search performance by 
+1) comparing the results to a set of preidentified records of interest to assess search sensitivity
+2) Manually assessing the sample (sample_fe_si_dx_bx_vet_<search_version>.json) to assess search ppv
+Each search performance chunk takes the input:
+  - **ai_dx_bx_vet_prior.xlsx** (input/) or **ai_dx_bx_vet_priors_<search_version>**
+  spreadsheet with preidentified papers I know are of interest (to calculate sensitivity. 
+  Updated with each sample to extend the list of TP (disqualifies direct comparisons of se between searches)
+  - **reviewed_ai_dx_bx_vet_v1.xlsx** (input/reviewed_lit_search)
+  Manually reviewed sample from the search (using template_fe_si_dx_bx_vet_<search_version>.xlsx)
+  - **results_fe_si_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  - **metadata_fe_si_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+Each search_performance chunk outputs:
+  - **performance_ai_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  sensitivity and ppv
+  - **priors_v<search_version+1>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/)
+  An updated list of tp, based on the initial priors and tp identified in earlier samples (this strategy makes the sensitivity estimate more reliable for later search versions, but disqualifies direct comparison of sensitivity between searches)
+  - **parsed_reviewed_ai_dx_bx_vet_<search_version>.json** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search)
+  Only for "late" versions - with parsed exclusion reasons for assessment)
+  - **exclusion_<search_version>.png** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search) breakdown of exclusion
+  Only for "late" versions - figure with exclusion reasons for assessment)
+  
+#### Query selection
+Based on evaluation of the search versions in scopus, the query in 
+**ai_dx_bx_vet_v12** was selected for the study. This query prioritized sensitivity (100%), over ppv (29%), opting against negative (AND NOT) type search terms (apart from Abstract titles). 
+The runner up query was version 13, including negative search terms for the other modalites than histopathology (by far the largest group of FP). This version had a sensitivity of 97% and a ppv of 49%. 
+
+#####  scopus_search_ai_dx_bx_vet_v1
+This is the first version (v1) of a search for articles on artificial intelligence applications
+for veterinary diagnostic pathology (ai_dx_bx_vet).
+This query was designed to cast a wide net (be sensitive) for articles on artificial intelligence
+applications for veterinary diagnostic pathology. 
+The initial query was designed to capture a list of articles we were familiar with and that fit the
+scope. Listed here:
+https://docs.google.com/spreadsheets/d/1NQ1F3EcLAciNyOxIDa67xlyQqWmXD7GOZaMlJk6fp4A/edit?usp=sharing
+
+```{r scopus_search_ai_dx_bx_vet_v1}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v1"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ( "canine"  OR "feline" OR "equine" OR "veterinar*")) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_vet_v1 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_vet_v1$cleaned_results
+metadata <- ai_dx_bx_vet_v1$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v1 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_vet_v1$sample 
+template <- sample_ai_dx_bx_vet_v1$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+#####  search_performance_ai_dx_bx_vet_v1
+100% sensitivity nut only 22% ppv.
+False positives consisted of 
+- One experimental (non diagnostic) in monkeys - consider adding common lab species as negative terms
+- Two reviews (one would be removed by adding neg term "review", the other by not using "veterinar*" (could instead specify species of interest - would also eliminate lab animal problem))
+- One cell culture study using "Madin-Darby Canine Kidney Cells"; "MDCK"
+- One about a veterinary anatomy tutoring system (mentions histology which I want to keep, consider skipping "veterinar*)
+- Two about other modalities (but using histopath for validation) - one "MRI", one "optical coherence tomography"
+```{r, search_performance_ai_dx_bx_vet_v1}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v1"
+
+priors <- read_xlsx(paste0(input_dir, "ai_dx_bx_vet_priors_v1.xlsx"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+write_json(priors, paste0(priors_dir, "priors_v1.json"))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_v2.json" ))
+```
+
+##### scopus_search ai_dx_bx_vet_v2
+Based on assessment of v1, experiment with 
+- removing "veterinar*"
+- adding negative search term "review"
+- adding negative search terms "MRI", "tomography"
+
+```{r scopus_search ai_dx_bx_vet_v2}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v2"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MRI" OR "tomography"))  AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v2
+Se 92.8%, ppv 50%
+- One unexpected "FN" record was eliminated when using "tomography" as negativ term (even though did not contain the word)
+FPs were:
+- One paper using cats as experimental species (could try negative searcg term "feline model" although that would risk potentially decreasing sensivity)
+- One editorial (try neg term "editorial")
+- One gait analysis paper - reconsider "patholog*" since the term is so wide - maybe add "image"
+- One risk prediction paper same comment as above -reconsider Pathol* or add image*
+- One on "biodynamic imaging" - try using "biodynamic" as negative term
+```{r, analyze sample}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v2"
+
+priors <- fromJSON(paste0(priors_dir, "priors_", search_version, ".json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+priors_version <- paste0("v", as.numeric(sub("v", "", search_version)) + 1)
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_", priors_version,".json" ))
+
+```
+
+
+##### scopus_search_ai_dx_bx_vet_v3
+
+Based on assessment of v2, experiment with 
+- change patholog* to pathologist* to avoid the over hits based on MESH terms including "pathology"
+- removing neg term "tomography" (unexpectedly lost a prior)
+- adding negative search term "editorial" and "biodynamic" and "Madin-Darby Canine Kidney" and "Computed tomography"
+- adding positive search term "image*" OR "computer vision"
+
+```{r, scopus_search_ai_dx_bx_vet_v3}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v3"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "pathologist*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MRI" OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney"))  AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v3
+Two false negatives because of changing "patholog*" to "pathologist*"
+- Two imaging papers (one "Computed tomography" and one "radiograph*")
+- One cytology paper "cytology"
+- One Toxpath study with a dog model ("nonclinical")
+
+```{r, search_performance_ai_dx_bx_vet_v3}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v3"
+
+priors <- fromJSON(paste0(priors_dir, "priors_", search_version, ".json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+priors_version <- paste0("v", as.numeric(sub("v", "", search_version)) + 1)
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_", priors_version,".json" ))
+
+```
+
+##### scopus_search_ai_dx_bx_vet_v4
+Based on assessment of v3, experiment with 
+- changing  pathologist* back to patholog* since it reduced sensitivity
+- adding "Computed tomography", "radiograph*" and "cytology" to negative terms 
+- adding "nonclinical"  to negative terms
+- adding "Abstract: " to negative title terms
+
+```{r, scopus_search_ai_dx_bx_vet_v4}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v4"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MRI" OR "radiograph*" OR "computed tomography" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney" OR "nonclinical")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v4
+- Lost one paper of interest by excluding "cytology" - consider removing
+- Two false positive were human dental papers ("canine")
+- One false positive were a veterinary MR paper (change MRI to MR*)
+
+```{r, analyze sample}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v4"
+
+priors <- fromJSON(paste0(priors_dir, "priors_", search_version, ".json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+priors_version <- paste0("v", as.numeric(sub("v", "", search_version)) + 1)
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_", priors_version,".json" ))
+
+```
+
+
+##### scopus_search_ai_dx_bx_vet_v5
+Based on assessment of v4, experiment with 
+- changed MRI to MR
+- Removed"cytology" (since lost a record)
+- Added negative keywords "dental" to avoid human dental papers
+```{r, scopus_search_ai_dx_bx_vet_v5}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v5"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MR*" OR "radiograph*" OR "computed tomography"  OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney" OR "nonclinical" OR "dental")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v5
+Good sensitivity
+Some FP:
+- Ultrasound, cytology, gros images and a little unclear what kind of images
+
+```{r, search_performance_ai_dx_bx_vet_v5}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v5"
+
+priors <- fromJSON(paste0(priors_dir, "priors_", search_version, ".json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+priors_version <- paste0("v", as.numeric(sub("v", "", search_version)) + 1)
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_", priors_version,".json" ))
+
+```
+
+
+##### scopus_search_ai_dx_bx_vet_v6
+- Experimented with adding "dog" or "dogs" or "cat" or "cats" or "horse" or "horses" as search term and explored differential hits. These were heavily dominated by false positives ("cat" especially can mean many things) and decided against.
+- Experimented with removing all negative search terms (except "review") to avoid overfitting. Results increased to 76.
+- Removing review as well - results increased
+- Keeping imaging negative keywords - Results 52
+- Keeping all negative keywords - Results 41
+- Keeping all negative keywords and adding negative keywords "ultrasound" and "cytology" - 36
+```{r}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v6"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney" OR "nonclinical" OR "dental")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample the full thing
+sample_size <- 36
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v6
+Remaining FPs that could be eliminated are "magnetic resonance imag*"
+```{r, search_performance_ai_dx_bx_vet_v6}
+
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v6"
+
+priors <- fromJSON(paste0(priors_dir, "priors_", search_version, ".json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+add_to_priors <- reviewed %>% 
+  filter(tp) %>% 
+  filter (!title %in% priors$title) %>%
+  select(scopus_id, title, abstract)
+
+priors <- bind_rows(priors, add_to_priors)
+
+priors_version <- paste0("v", as.numeric(sub("v", "", search_version)) + 1)
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+write_json(priors, paste0(priors_dir, "priors_", priors_version,".json" ))
+
+```
+
+
+
+##### scopus_search_ai_dx_bx_vet_v7
+- Experimented with removing negative_search_terms one-by-one - starting with "dental"
+Compared differing results with previous version instead of full new performance check:
+two FP, and one TP- prefer removing dental as negative keyword and filter human dental papers manually,
+```{r, scopus_search_ai_dx_bx_vet_v7}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v7"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney" OR "nonclinical" )) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v6 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v6.json"))
+
+diff <- results %>% filter(!(scopus_id %in% results_v6$scopus_id))
+```
+##### scopus_search ai_dx_bx_vet_v8
+This and the following few search versions experimented with removing negative_search_terms one-by-one - this time "nonclinical" and compares differing results (instead of doing a full performance check)
+Assessment: one FP removed - could keep or loose this keyword. Doesn't add much effort loosing it (just one FP caught) and would simplify search query - but at the same time do not expect to loose any TP with it.
+
+```{r, scopus_search ai_dx_bx_vet_v8}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v8"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography" OR "Madin-Darby Canine Kidney")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v7 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v7.json"))
+
+diff <- results %>% filter(!(scopus_id %in% results_v7$scopus_id))
+```
+
+##### scopus_search_ai_dx_bx_vet_v9
+Experimented with removing negative_search_terms one-by-one - this time "Madin-Darby Canine Kidney"
+- Assessment - two FP removed. 
+```{r, scopus_search_ai_dx_bx_vet_v9}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v9"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v8 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v8.json"))
+
+diff <- results %>% filter(!(scopus_id %in% results_v8$scopus_id))
+```
+
+##### scopus_search_ai_dx_bx_vet_v10
+Experimented with removing negative_search_terms - this time all competing modality terms
+(OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography")
+34 FP and one TP removed - the TP was a mitoses paper mentioning cytology in key words although using histopathology.
+Since AI is so much more common for imaging (CT, radiology, MRI), consider removing the negative keywords relating to this and keeping cytology. 
+
+```{r, scopus_search_ai_dx_bx_vet_v10}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v10"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine") AND NOT ("review" )) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v9 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v9.json"))
+
+diff <- results %>% filter(!(scopus_id %in% results_v9$scopus_id))
+```
+
+##### scopus_search_ai_dx_bx_vet_v11
+Experimented with removing negative_search_terms - this time all competing modality terms
+OR "MR*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "biodynamic imaging" OR "optical coherence tomography"
+3 FP and 1 TP removed.
+```{r, scopus_search_ai_dx_bx_vet_v11}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v11"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v10 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v10.json"))
+
+diff <- results %>% filter(!(scopus_id %in% results_v10$scopus_id))
+```
+
+
+##### scopus_search_ai_dx_bx_vet_v12
+Based on assessments of versions v8-v10 (where negative search terms "AND NOT" were iteratively removed),
+and the consideration to prioritize sensitivity over ppv for this search (since number of records is
+managable even with a more inclusive approach), the query for this version removed negative search terms and added 
+the positive search term "veterinar*" to capture possible non feline, canine or equine records. 
+
+```{r, scopus_search_ai_dx_bx_vet_v12}
+api_key <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt")
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v12"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine" OR "veterinar*")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, "_", Sys.Date(), ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, "_", Sys.Date(),".json"))
+
+#Get abstracts and prep template for the full search (set sample size to full list to use same function)
+#sample_size <- 120
+sample_size <- 138
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, "_", Sys.Date(), ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, "_", Sys.Date(), ".xlsx"))
+```
+##### search_performance_ai_dx_bx_vet_v12 2025-03-24: 
+- Sensitivity 100 % but ppv low (29%)
+Most FP were other modalities than histopathology 
+
+```{r, analyze sample}
+
+input_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+reviewed_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+priors_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/priors/")
+
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v12"
+
+priors <- fromJSON(paste0(priors_dir, "priors_v6.json"))
+
+results <- fromJSON(paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_", search_objective, "_", search_version, ".xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+performance <- calculate_search_se_ppv(priors, results, reviewed, metadata)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#mutate exclusion term
+reviewed <- reviewed %>%
+  mutate(exclusion = case_when(
+    str_detect(fp_comment, "CT|gross|cell_sorting|MRI|radiography|ultrasound|cytology|other_image_modality|optical_coherence_tomography|necropsy") ~ "not_biopsy",
+    str_detect(fp_comment, "human|cell_culture") ~ "not_veterinary",
+    str_detect(fp_comment, "experimental_animal_model|education_research") ~ "not_diagnostic",
+    str_detect(fp_comment, "review|editorial|erratum|book") ~ "not_research_paper",
+    
+    
+    
+    TRUE ~ NA_character_
+  ))
+
+
+reviewed <- results %>% left_join(reviewed) %>%
+  mutate(exclusion = if_else(is.na(abstract), "no_abstract", exclusion)) %>%
+  mutate(tp = if_else(is.na(abstract), FALSE, tp))
+
+write_json(reviewed, paste0(output_dir, "parsed_reviewed_ai_dx_bx_v12.json"))
+
+
+p <- reviewed %>%
+  count(tp, exclusion) %>%
+  ggplot(aes(x = tp, y = n, fill = exclusion)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Relevant search hit", y = "Count", fill = "Exclusion Reason") +
+  theme_bw()
+
+print(p)
+
+ggsave(paste0(output_dir, "exclusion_v12.png"),
+       plot = p,
+       dpi = 300,
+       width = 90,
+       height = 90,
+       units = "mm")
+
+
+```
+
+##### scopus_search_ai_dx_bx_vet_v13
+Most FP in v12 were not histopathology studies. For a veterinary search the total number
+of records are still managable, but if we later would like to use a similar query for 
+human ai for histopathology papers, we may want to prioritize ppv. This query explores 
+excluding some records in a vet search (to make it comparable with a similar human search)
+
+```{r, scopus_search_ai_dx_bx_vet_v13}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v13"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine" OR "veterinar*") AND NOT ("MR*" OR "Magnetic resonance*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "cytopathology" OR "optical coherence tomography")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+```
+
+##### search_performance_ai_dx_bx_vet_v13
+Since this only adds negative keywords compared with v12,no new hits are expected.
+This chunks confirms that, and used the reviewed v12 to see if the added negative terms 
+resulted in loss of TPs or FPs. 
+Only one histopathology study was lost by adding the negative keywords for other modalities,
+this was a book chapter and although with an (improper) keyword "cytology" for a histopathology study.
+Considered worth keeping the negative keywords for the improved performance
+
+```{r, search_performance_ai_dx_bx_vet_v13}
+input_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+results_v13 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v13.json"))
+metadata_v13 <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_vet_v13.json"))
+results_v12 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v12.json"))
+parsed_reviewed_v12 <- fromJSON(paste0(output_dir, "parsed_reviewed_ai_dx_bx_v12.json"))
+priors <- read_xlsx(paste0(input_dir, "ai_dx_bx_vet_priors_v1.xlsx"))
+
+#none as expected
+in_v13_not_in_v12 <- results %>% filter(!(scopus_id %in% results_v12$scopus_id))
+
+in_v12_not_in_v13 <- results_v12 %>% filter(!(scopus_id %in% results$scopus_id)) %>%
+  select(scopus_id) %>%
+  left_join(reviewed)
+
+reviewed_v13 <- results_v13 %>% left_join(parsed_reviewed_v12) %>%
+  mutate(exclusion = if_else(is.na(abstract), "no_abstract", exclusion)) %>%
+  mutate(tp = if_else(is.na(abstract), FALSE, tp))
+
+write_json(reviewed_v13, paste0(output_dir, "parsed_reviewed_ai_dx_bx_vet_v13.json"))
+
+fn_records <- priors %>% filter(!(title %in% results$title))
+
+performance <- calculate_search_se_ppv(priors, results_v13, reviewed_v13, metadata_v13)
+write_json(performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+p <- reviewed_v13 %>%
+  count(tp, exclusion) %>%
+  ggplot(aes(x = tp, y = n, fill = exclusion)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Relevant search hit", y = "Count", fill = "Exclusion Reason") +
+  theme_bw()
+
+print(p)
+
+ggsave(paste0(output_dir, "exclusion_vet_v13.png"),
+       plot = p,
+       dpi = 300,
+       width = 90,
+       height = 90,
+       units = "mm")
+
+summary_vet_v13 <- reviewed_v13 %>%
+  summarise(
+    total_records = n(),
+    total_tp_true = sum(tp == TRUE, na.rm = TRUE)
+  ) %>%
+  bind_cols(
+    reviewed_v13 %>% count(exclusion) %>% tidyr::pivot_wider(names_from = exclusion, values_from = n)
+  )
+
+write_xlsx(summary_vet_v13, paste0(output_dir, "summary_ai_dx_bx_vet_v13.xlsx"))
+```
+##### scopus_search_ai_dx_bx_vet_v14
+Experimenting with adding "computational pathology" to v12
+Adding computation pathology did not impact the search results
+
+```{r, scopus_search_ai_dx_bx_vet_v14}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v14"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*" OR "computational pathology") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine" OR "veterinar*")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v12 <- fromJSON(paste0(output_dir, "results_", search_objective, "_v12.json"))
+
+diff <- results %>% filter(!(doi %in% results_v12$doi))
+```
+
+##### scopus_search_ai_dx_bx_vet_v15
+Experimenting with adding "image_analysis" to v14 (to not bias too much towards DL)
+Adding image analysis added 1022 new hits making manual review less feasible.
+```{r, scopus_search_ai_dx_bx_vet_v15}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_vet"
+search_version <- "v15"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*" OR "computational pathology" OR "image analysis") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND ( "canine"  OR "feline" OR "equine" OR "veterinar*")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v14 <- fromJSON(paste0(output_dir, "results_", search_objective, "_v14.json"))
+
+diff <- results %>% filter(!(doi %in% results_v14$doi))
+```
+
+
+### pubmed_searches
+Searches in pubmed were perfomed based on the selected query ai_bx_dx_vet_v12, and the runner-up ai_bx_dx_vet_v13 (less sensitive)
+The pubmed searches were performed on the web interface on 2025-03-27 (for version 12) and 2025-03-24 (for version 13).
+The queries were adjusted to account for the search format on pubmed (title, abstract and MESH terms searched separately, keywords adjusted to fit MESH terms). 
+Each pubmed search are documented in chunks below
+- **pubmed_ai_dx_bx_vet_<search_version>**
+Each with the input files
+  - **query_ai_dx_bx_vet_<search_version>_pubmed.txt** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/pub_med/)
+  Containing the copy-pasted pubmed query
+  - **ai_dx_bx_vet_<search_version>_pubmed.csv** (artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/pub_med/)
+  Downloaed pubmed results
+  - **results_ai_dx_bx_vet_<search_version>.json** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  Downloaded scopus results
+  - **parsed_reviewed_ai_dx_bx_<search_version>.json** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  Parsed reviewed scopus results (parsed exclusion reason)
+  - **reviewed_pubmed_new_ai_dx_bx_vet_<search_version>.xlsx**
+  Manually reveiwed new records (based on template output in same chunk)
+And output: 
+  - **template_pubmed_new_ai_dx_bx_vet_<search_version>.xlsx** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  - **exclusion_vet_<search_version>_scopus_and_pubmed.png** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  Figure with exclusions
+  - **lit_search_for_flowchart_vet_<search_version>.xlsx** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  - **summary_<search_version>.xlsx** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  - **template_articles_ai_dx_bx_vet_<search_version>.xlsx** (/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/)
+  Template for full article review - only for v12
+  
+##### Deviations
+ai_dx_bx_vet_v12 pubmed search was repeated on 2025-09-09
+#### pubmed_ai_dx_bx_vet_v12
+```{r, pubmed_ai_dx_bx_vet_v12}
+pubmed_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/pub_med/"
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+
+pubmed_results_v12<- read_csv(paste0(pubmed_dir,"ai_dx_bx_vet_v12_pubmed.csv"))
+scopus_results_v12 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v12.json"))
+pubmed_query <- readLines(paste0(pubmed_dir, "query_ai_dx_bx_vet_v12_pubmed.txt"))
+parsed_reviewed_v12 <- fromJSON(paste0(output_dir, "parsed_reviewed_ai_dx_bx_v12.json"))
+
+duplicates_pubmed <- pubmed_results_v12 %>% filter((DOI %in% scopus_results_v12$doi))
+
+new_pubmed <- pubmed_results_v12 %>% filter(!(DOI %in% scopus_results_v12$doi))
+
+template <- new_pubmed %>%
+  rename(pubmed_id = PMID) %>%
+  rename(title = Title) %>%
+  select(pubmed_id, title) %>%
+    mutate(tp = "",
+           fp_comment = ""
+    )
+
+#write_xlsx(template, paste0(output_dir, "template_pubmed_new_ai_dx_bx_vet_v12.xlsx"))
+
+pubmed_new_reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_pubmed_new_ai_dx_bx_vet_v12.xlsx")) %>%   
+  mutate(exclusion = case_when(
+    str_detect(fp_comment, "CT|gross|cell_sorting|MRI|radiography|ultrasound|cytology|other_image_modality|optical_coherence_tomography|records|necropsy") ~ "not_biopsy",
+    str_detect(fp_comment, "human|cell_culture") ~ "not_veterinary",
+    str_detect(fp_comment, "experimental_animal_model|education_research") ~ "not_diagnostic",
+    str_detect(fp_comment, "review|editorial|erratum|book|commentary") ~ "not_research_paper",
+    TRUE ~ NA_character_
+  ))
+
+v12_reviewed <- bind_rows(parsed_reviewed_v12, pubmed_new_reviewed) 
+
+records_without_abstract<- v12_reviewed %>% filter(exclusion == "no_abstract")
+records_screened <- v12_reviewed %>% filter(exclusion != "no_abstract" | is.na(exclusion))
+screeened_records_excluded <- v12_reviewed %>% filter(!(exclusion == "no_abstract"))
+not_histopathology <-v12_reviewed %>% filter(exclusion == "not_biopsy")
+not_research <-v12_reviewed %>% filter(exclusion == "not_research_paper")
+not_dx<-v12_reviewed %>% filter(exclusion == "not_diagnostic")
+not_veterinary <-v12_reviewed %>% filter(exclusion == "not_veterinary")
+retreive <- v12_reviewed %>% filter(is.na(exclusion))
+
+tp_in_pubmed <- v12_reviewed %>% filter(tp == TRUE & doi %in% pubmed_results_v12$DOI)
+
+records_identified_from_scopus <- nrow(scopus_results_v12)
+records_identified_from_pubmed <- nrow(pubmed_results_v12)
+records_identified <- records_identified_from_scopus + records_identified_from_pubmed
+records_without_abstract<- nrow(records_without_abstract)
+duplicates_records_removed <- nrow(duplicates_pubmed)
+records_screened <- nrow(records_screened)
+screened_records_excluded_n <- nrow(screeened_records_excluded)
+excluded_not_bx <- nrow(not_histopathology)
+excluded_not_research <- nrow(not_research)
+excluded_not_diagnostic <- nrow(not_dx)
+excluded_not_veterinary <- nrow(not_veterinary)
+sought_for_retreival <- nrow(retreive)
+
+lit_search_for_flowchart <- data_frame(
+  records_identified = records_identified,
+  records_id_scopus = records_identified_from_scopus,
+  records_id_pubmed = records_identified_from_pubmed,
+  records_removed_before_screening = records_without_abstract + duplicates_records_removed,
+  records_wo_abstracts = records_without_abstract,
+  duplicates_records_removed = duplicates_records_removed,
+  records_screened = records_screened,
+  screened_records_excluded = screened_records_excluded_n,
+  excluded_not_research = excluded_not_research,
+  excluded_not_diagnostic = excluded_not_diagnostic,
+  excluded_not_veterinary = excluded_not_veterinary,
+  excluded_not_bx = excluded_not_bx,
+  sought_for_retreival = sought_for_retreival
+  
+  
+)
+
+p <- v12_reviewed %>%
+  count(tp, exclusion) %>%
+  ggplot(aes(x = tp, y = n, fill = exclusion)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Relevant search hit", y = "Count", fill = "Exclusion Reason") +
+  theme_bw()
+
+print(p)
+
+ggsave(paste0(output_dir, "exclusion_vet_v12_scopus_and_pubmed.png"),
+       plot = p,
+       dpi = 300,
+       width = 90,
+       height = 90,
+       units = "mm")
+
+summary_vet_v12_scopus_and_pubmed <- v12_reviewed %>%
+  summarise(
+    total_records = n(),
+    total_tp_true = sum(tp == TRUE, na.rm = TRUE)
+  ) %>%
+  bind_cols(
+    v12_reviewed %>% count(exclusion) %>% tidyr::pivot_wider(names_from = exclusion, values_from = n)
+  )
+
+write_xlsx(lit_search_for_flowchart, paste0(output_dir, "lit_search_for_flowchart_vet_v12.xlsx"))
+write_xlsx(summary_vet_v12_scopus_and_pubmed,paste0(output_dir, "summary_v12.xlsx") )
+
+articles_for_review <- v12_reviewed %>% filter(tp) %>%
+  select(doi, scopus_id, pubmed_id, title, journal, issn, coverDate, abstract) %>%
+  mutate(species = "",
+         disease_category = "",
+         disease = "",
+         organ = "",
+         image_type = "",
+         preparation = "",
+         ai_task_type = "",
+         ai_label_level = "",
+         low_level_use = "",
+         high_level_use = "",
+         ai_system_type = "",
+         ai_model_type = "",
+         ai_source = "",
+         validation = "",
+         label_modality = "",
+         pretraining = "",
+         aggregation = "",
+         explainability = "")
+
+write_xlsx(articles_for_review, paste0(output_dir, "template_articles_ai_dx_bx_vet_v12.xlsx"))
+```
+
+
+#### pubmed_ai_dx_bx_vet_v13
+Searched pubmed with same search terms.
+```{r, pubmed_ai_dx_bx_vet_v13}
+pubmed_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/pub_med/"
+pubmed_query <- readLines(paste0(pubmed_dir, "query_ai_dx_bx_vet_v13_pubmed.txt"))
+pubmed_results_v13<- read_csv(paste0(pubmed_dir,"ai_dx_bx_vet_v13_pubmed.csv"))
+scopus_results_v13 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_vet_v13.json"))
+parsed_reviewed_v13 <- fromJSON(paste0(output_dir, "parsed_reviewed_ai_dx_bx_vet_v13.json"))
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+
+duplicates_pubmed <- pubmed_results_v13 %>% filter((DOI %in% scopus_results_v13$doi))
+
+new_pubmed <- pubmed_results_v13 %>% filter(!(DOI %in% scopus_results_v13$doi))
+
+template <- new_pubmed %>%
+  rename(pubmed_id = PMID) %>%
+  rename(title = Title) %>%
+  select(pubmed_id, title) %>%
+    mutate(tp = "",
+           fp_comment = ""
+    )
+
+#write_xlsx(template, paste0(output_dir, "template_pubmed_new_ai_dx_bx_vet_v13.xlsx"))
+
+pubmed_new_reviewed <- read_xlsx(paste0(reviewed_dir, "reviewed_pubmed_new_ai_dx_bx_vet_v13.xlsx")) %>%   
+  mutate(exclusion = case_when(
+    str_detect(fp_comment, "CT|gross|cell_sorting|MRI|radiography|ultrasound|cytology|other_image_modality|optical_coherence_tomography|records") ~ "not_histopathology",
+    str_detect(fp_comment, "human|cell_culture") ~ "not_veterinary",
+    str_detect(fp_comment, "experimental_animal_model|education_research") ~ "not_diagnostic",
+    str_detect(fp_comment, "review|editorial|erratum|book|commentary") ~ "not_research_paper",
+    TRUE ~ NA_character_
+  ))
+
+v13_reviewed <- bind_rows(parsed_reviewed_v13, pubmed_new_reviewed) 
+records_without_abstract<- v13_reviewed %>% filter(exclusion == "no_abstract")
+records_screened <- v13_reviewed %>% filter(exclusion != "no_abstract" | is.na(exclusion))
+screeened_records_excluded <- v13_reviewed %>% filter(!(exclusion == "no_abstract"))
+not_histopathology <-v13_reviewed %>% filter(exclusion == "not_histopathology")
+not_research <-v13_reviewed %>% filter(exclusion == "not_research_paper")
+not_dx<-v13_reviewed %>% filter(exclusion == "not_diagnostic")
+not_veterinary <-v13_reviewed %>% filter(exclusion == "not_veterinary")
+retreive <- v13_reviewed %>% filter(is.na(exclusion))
+
+tp_in_pubmed <- reviewed_v13 %>% filter(tp == TRUE & doi %in% pubmed_results_v13$DOI)
+
+records_identified_from_scopus <- nrow(scopus_results_v13)
+records_identified_from_pubmed <- nrow(pubmed_results_v13)
+records_identified <- records_identified_from_scopus + records_identified_from_pubmed
+records_without_abstract<- nrow(records_without_abstract)
+duplicates_records_removed <- nrow(duplicates_pubmed)
+records_screened <- nrow(records_screened)
+screened_records_excluded_n <- nrow(screeened_records_excluded)
+excluded_not_bx <- nrow(not_histopathology)
+excluded_not_research <- nrow(not_research)
+excluded_not_diagnostic <- nrow(not_dx)
+excluded_not_veterinary <- nrow(not_veterinary)
+sought_for_retreival <- nrow(retreive)
+
+lit_search_for_flowchart <- data_frame(
+  records_identified = records_identified,
+  records_id_scopus = records_identified_from_scopus,
+  records_id_pubmed = records_identified_from_pubmed,
+  records_removed_before_screening = records_without_abstract + duplicates_records_removed,
+  records_wo_abstracts = records_without_abstract,
+  duplicates_records_removed = duplicates_records_removed,
+  records_screened = records_screened,
+  screened_records_excluded = screened_records_excluded_n,
+  excluded_not_research = excluded_not_research,
+  excluded_not_diagnostic = excluded_not_diagnostic,
+  excluded_not_veterinary = excluded_not_veterinary,
+  excluded_not_histopathology = excluded_not_bx,
+  sought_for_retreival = sought_for_retreival
+  
+  
+)
+
+
+
+p <- v13_reviewed %>%
+  count(tp, exclusion) %>%
+  ggplot(aes(x = tp, y = n, fill = exclusion)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Relevant search hit", y = "Count", fill = "Exclusion Reason") +
+  theme_bw()
+
+print(p)
+
+ggsave(paste0(output_dir, "exclusion_vet_v13_scopus_and_pubmed.png"),
+       plot = p,
+       dpi = 300,
+       width = 90,
+       height = 90,
+       units = "mm")
+
+summary_vet_v13_scopus_and_pubmed <- v13_reviewed %>%
+  summarise(
+    total_records = n(),
+    total_tp_true = sum(tp == TRUE, na.rm = TRUE)
+  ) %>%
+  bind_cols(
+    reviewed_v13 %>% count(exclusion) %>% tidyr::pivot_wider(names_from = exclusion, values_from = n)
+  )
+
+write_xlsx(lit_search_for_flowchart, paste0(output_dir, "lit_search_for_flowchart_vet_v13.xlsx"))
+write_xlsx(summary_vet_v13_scopus_and_pubmed,paste0(output_dir, "summary_v13.xlsx") )
+```
+### Scopus search ai_dx_bx_human_v1
+This is the first version (v1) of a search for articles on artificial intelligence
+applications for human diagnostic pathology (ai_dx_bx_human)
+
+#### Query rationale
+This query was designed based to case a wide net for AI for histopathology (in english,
+with document type limited to article (excludes reviews, editorials, letters and conference papers)).
+
+#### Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v1.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v1.json (output/lit_search) (with search metadata)
+- sample_ai_dx_bx_humans_v1.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v1.json (output/lit_search) (template for manual review of sample)
+
+```{r, search ai_dx_bx_human_v1,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v1"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v1 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v1$cleaned_results
+metadata <- ai_dx_bx_human_v1$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v1 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v1$sample
+template <- sample_ai_dx_bx_human_v1$template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+
+```
+
+THE SEARCH BELOW WAS PERFORMED BEFORE THE SEARCH ABOVE
+
+### Search performance ai_dx_bx_human_v1
+Calculates the ppv for ai_dx_bx_human_v1 (used to draft query for v2)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v1.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v1.json (output/lit_search)
+
+#### Assessment
+This version of the search had a ppv of 20%. 
+- Four false positive were reviews (would be eliminated by adding the negative search term "review")
+- One was a perspective paper (would be eliminated by adding the negative search term "perspective paper")
+- Two were on cytopathology (not histopathology") one of them als oa review - consider adding negative search term "cytopathology"
+- One was on cytogenetics and karyotypes (Don't expect this to be a large category but consider adding negative term "karyotype")
+- One was a suggested framework for data annotation (I have no good negative search terms for this, adding "framework" would risk eliminating too many TPs)
+
+
+
+```{r, analyze sample}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v1"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v1.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v1.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+
+
+```
+
+
+### Scopus search ai_dx_bx_human_v2
+
+#### Query rationale
+Same as v1 but with added negative search terms "review", perspective paper", "cytopathology", "cytogenetic"
+#### Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v2.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v2.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v2.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v2.json (output/lit_search)  (template for manual review of sample)
+
+```{r, search ai_dx_bx_human_v2,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v2"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective paper" OR "cytopathology" OR "cytogenetic" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v2 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v2$cleaned_results
+metadata <- ai_dx_bx_human_v2$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v2 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v2$sample
+template <- sample_ai_dx_bx_human_v2$template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+
+```
+### Search performance ai_dx_bx_human_v2
+Calculates the ppv for ai_dx_bx_human_v2 (used to draft query for v3)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v2.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v2.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 30%
+False postives were:
+- Two veterinary papers (one canine on liquid biopsies and one equine on cytology - suggested neg terms "canine" "liquid biopsy", "equine", "cytology" consider adding "feline", "murine", "mice", "rats" and "veterinary" as negative terms)
+- Two on AI for other modalities (one on ultrasound and one on optic coherence tomography) - consider adding negative search terms "ultrasound" and "tomography"
+- One was conferece proceedings (consider adding neg term "proceedings")
+- One was on "activity index" abbreviated as "AI" consider removing "AI" as search term and see how many fewer hits or adding "acitvity index" as negative term
+- One used a language model to parse info from pathology reports (considered negative term "language model" bt that risks
+eliminating vision-language models so maybe better to accept this)
+
+
+```{r, analyze sample v2}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v2"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v2.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v2.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#print negative term suggestion
+print(reviewed_sample$fp_neg_term_suggestion)
+```
+
+
+### Scopus search ai_dx_bx_human_v3
+
+#### Query rationale
+based on "v2" but removed "AI" to avoid other abbreviations (such as acitvity index)
+#### Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v3.json (output/lit_search)  (with all search results)
+- metadata_ai_dx_bx_humans_v3.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_diff_v2_v3.json (output/lit_search)  (sample for review)
+- template_ai_dx_bx_humans_diff_v2_v3.json (output/lit_search) (template for manual review of sample)
+
+#### Comment
+This is a little different from previous assessments since it evaluates the search hits lost by removing the term "AI".
+Removing "AI" as search term resulted in 160 less hits. A sample of hits that occured in v2 but not v3, revealed that 
+50% (5/10) were TP and 50% were FP. Of the FP one was a FP for another reason "liquid biopsy" and four becasue
+AI stood for something else "activity index", apoptotic index", "apoptosis index" or "aortic insufficency".
+Surprisingly many of the TP in this did mention other search terms like "Artificial intelligence" and "Deep Learning".
+Consider explicitly making the search case insensitive.
+
+```{r, search ai_dx_bx_human_v3,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v3"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective paper" OR "cytopathology" OR "cytogenetic" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v3 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v3$cleaned_results
+metadata <- ai_dx_bx_human_v3$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+results_v2 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v2.json"))
+results_v3 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v3.json"))
+
+results_diff_v2_v3 <- results_v2 %>% 
+  filter(!(scopus_id %in% results_v3$scopus_id))
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_diff_v2_v3 <- sample_results(results_diff_v2_v3, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_diff_v2_v3$sample
+template <- sample_ai_dx_bx_human_diff_v2_v3$template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_diff_v2_v3.json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_diff_v2_v3.xlsx"))
+
+```
+
+
+
+### Scopus search ai_dx_bx_human_v4
+
+#### Query rationale
+Based on v2 but instead of removing "AI" as in v3 - added alternatives abbreviated as AI as negative search terms.
+Also added negative search terms for other paper types (proceedings), species (equine, canine etc) and 
+modalities (ultrasound, tomography) based on manual review of sample from v2 and diff v2-v3
+#### Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v4.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v4.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v4.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v4.json (output/lit_search)  (template for manual review of sample)
+
+
+
+#### Comment
+
+
+```{r, search ai_dx_bx_human_v3,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v4"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective paper" OR "proceedings" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography"  OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v4 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v4$cleaned_results
+metadata <- ai_dx_bx_human_v4$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v4 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v4$sample
+template <- sample_ai_dx_bx_human_v4$template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+
+```
+### Search performance ai_dx_bx_human_v4
+Calculates the ppv for ai_dx_bx_human_v4 (used to draft query for v5)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v4.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v4.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 55%
+False positives were:
+- 2 papers about MRI (adding the negative term "MRI" would fix it)
+- one opinion piece (didnt find any good negative search terms for that)
+- one editorial (could filter papers w/o abstracts)
+
+
+```{r, analyze sample v4}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v4"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v4.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v4.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#print negative term suggestion
+print(reviewed_sample$fp_neg_term_suggestion)
+```
+
+
+### Scopus search ai_dx_bx_human_v5
+
+#### Query rationale
+Based on v4 but added the negative keyword "MRI" and filtered sample on papers w abstract/ (can do this for all once 
+search terms are finalizd)
+#### Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v5.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v5.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v5.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v5.json (output/lit_search)  (template for manual review of sample)
+
+
+
+#### Comment
+```{r, search ai_dx_bx_human_v3,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v5"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective paper" OR "proceedings" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI"  OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v5 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v5$cleaned_results
+metadata <- ai_dx_bx_human_v5$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v5 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v5$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_v5$template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+
+```
+
+### Search performance ai_dx_bx_human_v5
+Calculates the ppv for ai_dx_bx_human_v5 (used to draft query for v5)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v5.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v5.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 50%
+False positives were:
+- One perspective paper (consider adding the negative term "perspective" although this may filter too much)
+- One risk prediction model using pathology as ground truth
+- One RNA seq data (cells from biopsy)
+- One editorial or similar but w/o mentioning that
+- One that mentions AI as a future perspective (not sure how to get rid of that)
+
+```{r, analyze sample v5}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v5"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v5.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v5.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#print negative term suggestion
+print(reviewed_sample$fp_neg_term_suggestion)
+```
+
+
+### Scopus search ai_dx_bx_human_v6
+
+#### Query rationale
+Based on v5 but added the negative keyword "perspective"
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v6.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v6.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v6.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v6.json (output/lit_search)  (template for manual review of sample)
+
+
+
+#### Comment
+This was to explore using "perspective" instead of "perspective paper" as negative keyword.
+Only 29 search hits were loss, in a review of a sample 6/10 lost were FP and 4/10 lost were actually TP.
+To prioritize PPV I lean towards using perspective - an probably add "commentary"
+```{r, search ai_dx_bx_human_v6,  warning=FALSE, message=FALSE}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v6"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective" OR "proceedings" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI"  OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v6 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v6$cleaned_results
+metadata <- ai_dx_bx_human_v6$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+results_v5 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v5.json"))
+results_v6 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v6.json"))
+
+results_diff_v5_v6 <- results_v5 %>% 
+  filter(!(scopus_id %in% results_v6$scopus_id))
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_diff_v5_v6 <- sample_results(results_diff_v5_v6, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_diff_v5_v6$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_diff_v5_v6 $template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_diff_v5_v6.json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_diff_v5_v6..xlsx"))
+
+```
+
+
+### Scopus search ai_dx_bx_human_v7
+
+#### Query rationale
+Based on v6 but added the negative keyword "commentary"
+
+####Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v7.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v7.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v7.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v7.json (output/lit_search)  (template for manual review of sample)
+
+
+
+#### Comment
+
+```{r, search v7}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v7"
+database = "scopus"
+
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective" OR "proceedings" OR "commentary" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI" OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( SRCTYPE , "j" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v7 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v7$cleaned_results
+metadata <- ai_dx_bx_human_v7$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v7 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v7$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_v7$template %>%
+  filter(!is.na(abstract))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+
+```
+
+### Search performance ai_dx_bx_human_v7
+Calculates the ppv for ai_dx_bx_human_v7 (used to draft query for v7)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v7.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v7.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 67%
+- 1 FP was a review that used the term reviews (solved by review* as negative term)
+- 1 FP was a clinical outlook - did not id any good negative terms
+- 1 FP was a survey on digital pathology. Try excluding "survey" (may reduce sensitivity)
+
+```{r, analyze sample v7}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v7"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v7.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v7.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#print negative term suggestion
+print(reviewed_sample$fp_neg_term_suggestion)
+```
+
+### Scopus search ai_dx_bx_human_v8
+
+#### Query rationale
+Exclude "survey" and see what happens
+
+####Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v8.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v8.json (output/lit_search)  (with search metadata)
+
+
+
+
+#### Comment
+Most hits that differed between v7 and v8 were FPs. Unexpectdly one was about "plant pathology" (use this as negative term)
+
+```{r, search v8}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v8"
+database = "scopus"
+
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review" OR "perspective" OR "proceedings" OR "commentary" OR "survey" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI" OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( SRCTYPE , "j" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v8 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v8$cleaned_results
+metadata <- ai_dx_bx_human_v8$metadata
+
+results_diff_v7_v8 <- results_v7 %>% 
+  filter(!(scopus_id %in% results$scopus_id))
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_diff_v7_v8 <- sample_results(results_diff_v7_v8, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_diff_v7_v8$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_diff_v7_v8 $template
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_diff_v7_v8.json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_diff_v7_v8..xlsx"))
+```
+### Scopus search ai_dx_bx_human_v9
+
+#### Query rationale
+Based on v8 but added the negative keyword "plant pathology" and adjsuted "review" to "review*"
+
+####Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v9.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v9.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v9.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v9.json (output/lit_search)  (template for manual review of sample)
+
+```{r, search v9}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v9"
+database = "scopus"
+
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review*" OR "perspective" OR "proceedings" OR "commentary" OR "survey" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI" OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "plant pathology" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( SRCTYPE , "j" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v9 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v9$cleaned_results
+metadata <- ai_dx_bx_human_v9$metadata
+
+results <-  ai_dx_bx_human_v9$cleaned_results
+metadata <- ai_dx_bx_human_v9$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v9 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v9$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_v9$template %>%
+  filter(!is.na(abstract))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+```
+
+### Search performance ai_dx_bx_human_v9
+Calculates the ppv for ai_dx_bx_human_v9 (used to draft query for v10)
+
+#### Input
+- reviewed_ai_dx_bx_humans_v9.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v9.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 50%
+TP included records that would for "X-ray", "mammography", "molecular dynamic simulation",
+one "correction" and one spotlight (not mentioned)
+
+
+```{r, analyze sample v9}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v9"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v9.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v9.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+#print negative term suggestion
+print(reviewed_sample$fp_neg_term_suggestion)
+```
+
+
+### Scopus search ai_dx_bx_human_v10
+
+#### Query rationale
+Based on v9 but added the negative keyword "X-ray" and "mammography" and "molecular dynamic simulation" 
+
+####Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v10.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v10.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v10.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v10.json (output/lit_search)  (template for manual review of sample)
+
+```{r, search v10}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v10"
+database = "scopus"
+
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "AI" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational" ) W/3 ( "pathology" OR "biopsy" ) AND ( "human" ) AND NOT ( "review*" OR "perspective" OR "proceedings" OR "commentary" OR "survey" OR "correction" OR "X-ray" OR "mammography" OR "molecular dynamic simulation" OR "cytopathology" OR "cytogenetic" OR "cytolog*" OR "liquid biopsy" OR "ultrasound" OR "tomography" OR "MRI" OR "canine" OR "equine" OR "feline" OR "murine" or "mice" or "rat" OR "veterinary" OR "plant pathology" OR "apoptotic index" OR "apoptosis index" OR "activity index" OR "aortic insufficiency" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( SRCTYPE , "j" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v10 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v10$cleaned_results
+metadata <- ai_dx_bx_human_v10$metadata
+
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v10 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v10$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_v10$template %>%
+  filter(!is.na(abstract))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+```
+
+
+### Search performance ai_dx_bx_human_v10
+Calculates the ppv for ai_dx_bx_human_v10 
+
+#### Input
+- reviewed_ai_dx_bx_humans_v10.xlsx (input/reviewed_lit_search)
+This consists of a manually reviewed sample from the search
+
+#### Output
+- performance_ai_dx_bx_humans_v10.json (output/lit_search) 
+
+#### Assessment
+This version of the search had a ppv of 100%
+
+
+
+```{r, analyze sample v10}
+
+reviewed_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/reviewed_lit_search/")
+output_dir <- paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/")
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v10"
+
+reviewed_sample <- read_xlsx(paste0(reviewed_dir, "reviewed_ai_dx_bx_human_v10.xlsx"))
+metadata <- fromJSON(paste0(output_dir, "metadata_ai_dx_bx_human_v10.json"))
+
+search_performance <- calculate_search_performance(reviewed_sample, metadata)
+
+write_json(search_performance, paste0(output_dir, "performance_", search_objective, "_", search_version, ".json"))
+
+
+```
+
+
+### Analyze ai_dx_bx_human_v10
+Get the abstracts for ai_dx_bx_human_v10 
+
+```{r, analyze v10}
+results_v10 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v10.json")) 
+
+abstracts_v10 <- results_v10 %>%
+    mutate(
+      abstract = map_chr(scopus_id, ~ get_abstract(.x, api_key))
+    )
+write_json(abstracts_v10, paste0(output_dir, "abstracts_", search_objective, "_", search_version, ".json"))
+```
+
+### Analyze journals for human v10
+```{r}
+results_v10 <- fromJSON(paste0(output_dir, "results_ai_dx_bx_human_v10.json")) 
+
+journal_counts <- results_v10 %>%
+  count(journal, name = "count") %>%
+  mutate(percentage = (count / sum(count)) * 100) %>%
+  arrange(desc(count))
+```
+
+
+#### Scopus search ai_dx_bx_human_v11
+
+#### Query rationale
+Adjusted to just search the top three pathology scpecific journals from v10 
+with just AI terms (removed "AI" to get rid of competing abbreviations)
+####Input
+- api_key directory
+
+#### Output
+- results_ai_dx_bx_humans_v11.json (output/lit_search) (with all search results)
+- metadata_ai_dx_bx_humans_v11.json (output/lit_search)  (with search metadata)
+- sample_ai_dx_bx_humans_v11.json (output/lit_search) (sample for review)
+- template_ai_dx_bx_humans_v11.json (output/lit_search)  (template for manual review of sample)
+
+```{r, search v11}
+
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v11"
+database = "scopus"
+
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning" OR "deep learning" OR "computer vision" OR "neural network*" OR "computational pathology" )) AND SRCTITLE ( "Modern Pathology" OR "Journal of Pathology" OR "American Journal of Pathology" ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) ) AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( SRCTYPE , "j" ) )'
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+ai_dx_bx_human_v11 <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  ai_dx_bx_human_v11$cleaned_results
+metadata <- ai_dx_bx_human_v11$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+#Sample 10 search hits and prepare a template for manual review
+sample_size <- 10
+
+sample_ai_dx_bx_human_v11 <- sample_results(results, sample_size, api_key)
+
+sample <- sample_ai_dx_bx_human_v11$sample %>%
+  filter(!is.na(abstract))
+template <- sample_ai_dx_bx_human_v11$template %>%
+  filter(!is.na(abstract))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version,".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_" , search_version, ".xlsx"))
+```
+
+
+#### Scopus search ai_dx_bx_human_v13
+
+#### Query rationale
+Used the search from vet v13 but removed species
+####Input
+- api_key directory
+
+#### Output
+
+##### Comment 15,222 hits
+Error after 31% try dividing up by year if you want to run this
+
+```{r}
+api_key <- readLines(paste0(to_box, "judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/elsevier_api_key.txt"))
+
+search_objective <- "ai_dx_bx_human"
+search_version <- "v13"
+database = "scopus"
+
+query <- 'TITLE-ABS-KEY ( ( "artificial intelligence" OR "machine learning*" OR "deep learning*") AND ( "patholog*" OR "biops*" OR "histolog*" or "histopatholog*" ) AND ("image*" OR "computer vision") AND NOT ("MR*" OR "Magnetic resonance*" OR "radiograph*" OR "computed tomography" OR "ultrasound" OR "cytology" OR "cytopathology" OR "optical coherence tomography")) AND NOT (TITLE("Abstract:"))  AND ( LIMIT-TO ( LANGUAGE , "English" ) ) AND ( LIMIT-TO ( DOCTYPE , "ar" ) OR LIMIT-TO ( DOCTYPE , "cp" ) )'
+
+
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_labs/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/lit_search/"
+
+results_and_metadata <- search_scopus(api_key, search_objective, search_version, database, query)
+
+results <-  results_and_metadata$cleaned_results
+metadata <- results_and_metadata$metadata
+
+write_json(results, paste0(output_dir, "results_", search_objective, "_", search_version, ".json"))
+write_json(metadata, paste0(output_dir, "metadata_", search_objective, "_", search_version, ".json"))
+
+#Get abstacts and prep template for the full search (set sample size to full list to use same function)
+sample_size <- 67
+
+sample_and_template <- sample_results(results, sample_size, api_key)
+
+sample <- sample_and_template $sample 
+template <- sample_and_template$template %>%
+  filter(!(is.na(abstract)))
+
+write_json(sample, paste0(output_dir, "sample_", search_objective, "_", search_version, ".json"))
+write_xlsx(template, paste0(output_dir, "template_", search_objective, "_", search_version, ".xlsx"))
+
+
+```
+
+
+
+### Final search 2025-09-09
+The original search above was used for the dissertation. 
+The search was repeated in September for the vet path paper using the same protocol (vet_v12) for scopus and pubmed (in old chunks above)
+
+```{r}
+### Read in new scopus search results
+new_scopus_2025_sept <- fromJSON(paste0(output_dir, "sample_", search_objective, "_", search_version, "_", Sys.Date(), ".json")) 
+
+
+new_pubmed_2025_sept <- read_csv("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/pub_med/ai_dx_bx_vet_v12_pubmed_2025-09-09.csv")
+
+duplicates <- new_pubmed_2025_sept %>% filter(DOI %in% new_scopus_2025_sept$doi)
+
+new_pubmed_not_duplicate <- new_pubmed_2025_sept %>% filter(!DOI %in% new_scopus_2025_sept$doi)
+
+### Read in previously reviewed records
+parsed_reviewed_scopus_2025_march <- fromJSON(paste0(output_dir, "parsed_reviewed_ai_dx_bx_v12.json")) 
+
+#Create template based on parsed previously reviewed scopus search
+template_new <- parsed_reviewed_scopus_2025_march %>%
+  rename(database_id = scopus_id,
+         title = title,
+         first_author = creator,
+         date = coverDate) %>%
+  mutate(database = "scopus") %>%
+  select(database_id, database, title, first_author,date, doi, abstract, tp, fp_comment, exclusion)
+
+#Filter scopus records to add
+add_scopus_to_template <- new_scopus_2025_sept %>%
+  filter(!doi %in% template_new$doi) %>%
+  rename(database_id = scopus_id,
+         title = title,
+         first_author = creator,
+         date = coverDate) %>%
+  mutate(database = "scopus",
+         tp = "",
+         fp_comment = "",
+         exclusion = "") %>%
+  select(database_id, database, title, first_author, date, doi, abstract, tp, fp_comment, exclusion)
+
+template_new_scopus_added <- rbind(template_new, add_scopus_to_template)
+
+add_pubmed_to_template <- new_pubmed_2025_sept %>%
+  filter(!DOI %in% template_new_scopus_added$doi) %>%
+  mutate(database = "scopus",
+         abstract = "fetch",
+         tp = "",
+         fp_comment = "",
+         exclusion = "") %>%
+  rename(database_id = PMID,
+         title = Title,
+         first_author = `First Author`,
+         date = `Create Date`,
+         doi = DOI
+         ) %>%
+  select(database_id, database, title, first_author, date, doi, abstract, tp, fp_comment, exclusion)
+
+template_full <- rbind(template_new_scopus_added, add_pubmed_to_template)
+
+missing_abstract <- template_full %>% filter(is.na(abstract))
+
+template <- template_full %>% filter(!is.na(abstract))
+
+write_xlsx(template, paste0(output_dir, "records_for_screening_2025-09-09.xlsx"))
+
+screened_records <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/input/screened_records/screened_records_2025-09-09.xlsx")
+
+records_excluded <- screened_records %>% filter(tp == FALSE)
+
+not_biopsy <- records_excluded %>% filter(exclusion == "not_biopsy")
+not_research_paper <- records_excluded %>% filter(exclusion == "not_research_paper")
+not_diagnostic <- records_excluded %>% filter(exclusion == "not_diagnostic")
+not_veterinary <- records_excluded %>% filter(exclusion == "not_veterinary")
+sought_for_retreival <- screened_records %>% filter(tp == TRUE)
+
+```

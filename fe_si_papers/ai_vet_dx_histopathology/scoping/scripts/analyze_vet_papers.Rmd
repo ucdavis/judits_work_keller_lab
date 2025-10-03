@@ -1,0 +1,484 @@
+---
+title: "analyze_vet_papers"
+author: "Wulcan"
+date: "2025-04-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+For the paper Artificial intelligence in veterinary diagnostic histopathology: a scoping review and survey of current implementation 
+
+Analyze 
+1) How the volume of research on AI applications in veterinary diagnostic histopathology has changed over time.
+2) How the types of AI applications have evolved, including intended use. AI model types, data sources, learning methodologies, and methods for addressing explainability.
+
+### Input
+Records identified in lit search.Rmd, and manually reviewed 
+
+
+#Reviewed reports - parsed for supplementary table S2
+```{r, message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(writexl)
+reviewed_reports_raw <- read_xlsx( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation//input/reviewed_reports/supplementary_table_s2_reviewed_articles_ai_dx_bx_vet_v12.xlsx")
+
+reviewed_reports_parsed <- reviewed_reports_raw %>%
+  rename(Author = author) %>%
+  mutate(Purpose = case_when(
+    intended_use == "count_mitoses" ~ "Mitotic count",
+    intended_use == "diagnosis" ~ "Lesion classification",
+    intended_use == "count_Ki67" ~ "Ki67 count",
+    intended_use == "quantification_area_necrosis" ~ "Quantification, necrosis",
+    intended_use == "genotype_prediction"  ~ "Genotype prediction",
+    intended_use == "morphometry_nuclei" ~ "Nuclear morphometry",
+    intended_use == "clonality_prediction ihc_prediction diagnosis" ~ "Clonality prediction",
+    intended_use == "count_lymphocytes" ~ "Lymphocyte count",
+    intended_use == "synthetic_image_generation" ~ "Synthetic image generation",
+    intended_use == "virtual_ihc" ~ "Virtual IHC",
+    intended_use == "prognostication" ~ "Response to treatment prediction",
+    intended_use == "quantification_area_fibrosis" ~ "Quantification, fibrosis",
+    TRUE ~ intended_use)) %>%
+   mutate(Disease = case_when(
+     (species == "dog" & disease == "mast_cell_tumors") |
+       (species == "dog" & disease == "mast_cell_tumor") 
+     ~ "Canine MCT",
+     species == "dog" & disease == "mammary_tumors" 
+     ~ "Canine mammary tumors",
+     species == "dog human" & disease == "mammary_tumors" ~ "Canine & human mammary tumors",  
+     species == "dog" & disease == "fibrosarcoma" 
+     ~ "Canine fibrosarcoma",
+     species == "dog" & disease == "cutaneous_round_cell_tumors" 
+     ~ "Canine round cell tumors",
+     species == "dog" & disease == "perivascular_wall_tumor" 
+     ~ "Canine PWT",
+     species == "dog" & disease == "skin_tumors" 
+     ~ "Canine skin tumors",
+     species == "dog" & disease == "soft_tissue_sarcoma" 
+     ~ "Canine STS",
+     species == "dog" & disease == "mast_cell_tumor mammary_tumors" 
+     ~ "Canine MCT & mammary tumors",
+     species == "dog" & disease == "lymphoma" 
+     ~ "Canine lymphoma",
+     species == "dog" & disease == "urothelial_carcinoma" 
+     ~ "Canine urothelial carcinoma",
+     species == "dog cat" & disease == "lymphoma" 
+     ~ "Canine & feline lymphoma",
+     species == "cat" & disease == "t_cell_lymphoma" ~ "Feline T-cell lymphoma",
+     species == "cat" & disease == "fce" 
+     ~ "Feline chronic enteropathy",
+     species == "dog cat" & disease == "mast_cell_tumor soft_tissue_sarcoma" 
+     ~ "Canine & feline MCT & STS",
+     species == "dog" & disease == "PLE" 
+     ~ "Canine PLE",
+     species == "dog cat human" & disease == "cancer_multiple" 
+     ~ "Canine, feline & human neoplasia",
+     species == "dog" & disease == "pulmonary_carcinoma" 
+     ~ "Canine pulmonary carcinoma",
+     species == "horse" & disease == "endometritis"
+     ~ "Equine endometritis")) %>%
+  mutate(Task = case_when(
+    (task_type == "classification" & classification_level == "object (mitoses)") |
+      (task_type == "classification" & classification_level == "object (cells)") |
+      (task_type == "classification" & classification_level == "pixel object (nuclei)") |
+      (task_type == "classification" & classification_level == "pixel object (lymphocytes)") |
+      (task_type == "classification" & classification_level == "object (mitoses) or pixel or patch") |
+      (task_type == "classification" & classification_level == "object_and _pixels  (nuclei)")
+    ~ "Object classification",
+    (task_type == "classification" & classification_level == "image") |
+      (task_type == "classification" & classification_level == "image (patch)") |
+      (task_type == "classification" & classification_level == "patch") |
+      (task_type == "classification" & classification_level == "patches") | 
+      (task_type == "classification" & classification_level == "image (tile)")
+      ~ "Image classification",
+    (task_type == "classification" & classification_level == "pixel patch") | 
+      (task_type == "classification" & classification_level == "pixel") |
+      (task_type == "classification" & classification_level == "pixel image") |
+      (task_type == "classification" & classification_level == "pixels (nuclei)") 
+    ~ "Pixel classification",
+    task_type == "image_to_image_translation" ~ "Image to image translation",
+    task_type == "image_generation" ~ "Image generation")) %>%
+mutate(Model = case_when(
+  model_type == "DL" & model_architecture == "CNN" 
+  ~ "DL (CNN)",
+  model_type == "classic_ML" & model_architecture == "SVM" 
+  ~ "Classic ML (SVM)",
+  model_type == "DL classic_ML" & model_architecture == "CNN SVM SGB" 
+  ~ "DL (CNN) & classic ML (multiple)",
+  model_type == "classic_ML" & model_architecture == "LDA SVM NB DT KNN" 
+  ~ "Classic ML (multiple)",
+  model_type == "DL" & model_architecture == "diffusion_model" 
+  ~ "DL (diffusion model)",
+  model_type == "DL" & model_architecture == "GAN" 
+  ~ "DL (GAN)",
+  model_type == "DL" & model_architecture == "ViT CNN" 
+  ~ "DL (ViT & CNN)",
+  TRUE ~ "Not reported")) %>%
+  mutate(Learning = case_when(
+    learning_paradigm == "supervised" ~ "Supervised",
+    learning_paradigm == "weakly_supervised" ~ "Weakly supervised",
+    learning_paradigm == "self_supervised" ~ "Self-supervised"
+  )) %>%
+  mutate(Target = case_when(
+    target_source == "human_annotation" ~ "Annotations",
+    target_source == "human_annotation_ihc_assisted" ~ "Annotations",
+    target_source == "genotype" ~ "Genotype",
+    target_source == "human_annotation clonality ihc" ~ "Clonality",
+    target_source == "ihc" ~ "IHC",
+    target_source == "medical_record_data" ~ "Medical record data",
+    TRUE ~ NA)) %>%
+  mutate(MIL = case_when(
+    mil_methodology == "bag-level label based on majority" ~ "Majority label",
+    mil_methodology == "attention-based" ~ "Attention-based",
+    TRUE ~ NA)) %>%
+  mutate(XAI = case_when(
+    explainability_approach == "saliency_maps" ~ "Saliency map",
+    TRUE ~ NA
+  ))
+
+supplementary_table <- reviewed_reports_parsed %>%
+  select(Author, title, Purpose, Disease, Task, Model, Learning, Target, MIL, XAI)
+    
+write_xlsx(supplementary_table, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/analyze_vet_papers/supplementary_table_s2.xlsx")     
+     
+    
+
+
+```
+
+## Reviewed reports - updated variable names
+```{r}
+library(jsonlite)
+library(readxl)
+library(tidyverse)
+library(cowplot)
+
+reviewed_reports <- read_xlsx( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation//input/reviewed_lit_search/reviewed_reports//reviewed_articles_ai_dx_bx_vet_v12_updated.xlsx") %>%
+  mutate(year = ifelse(pubmed_id == "24153030", as.numeric("2013"), year)) %>%
+  mutate(year = ifelse(is.na(year), year(as.Date(coverDate, format = "%Y-%m-%d")), year)) %>%
+  mutate(year = ifelse(scopus_id == "105003396981", as.numeric("2025"), year)) %>%
+  mutate(cancer = ifelse(
+    disease == "pulmonary_carcinoma" |
+      disease == "cancer_multiple" |
+      disease == "perivascular_wall_tumor" |
+      disease == "mast_cell_tumor soft_tissue_sarcoma" |
+      disease == "mast_cell_tumor" |
+      disease == "mast_cell_tumor mammary_tumors" |
+      disease == "lymphoma" |
+      disease == "t_cell_lymphoma" |
+      disease == "mammary_tumors" |
+      disease == "skin_tumors" |
+      disease == "urothelial_carcinoma" |
+      disease == "soft_tissue_sarcoma" |
+      disease == "cutaneous_mast_cell_tumor mammary_tumors" |
+      disease == "cutaneous_round_cell_tumors" |
+      disease == "fibrosarcoma" |
+      disease == "mast_cell_tumors", 
+    TRUE, FALSE)) %>%
+  mutate(application_type = case_when(
+    grepl("count", intended_use) ~ "Cell count",
+    grepl("morphometry", intended_use) ~ "Cell feature quantification",
+    grepl("quantification_area", intended_use) ~ "Area quantification",
+    grepl ("prediction", intended_use) ~ "Biomarker prediction",
+    grepl ("virtual_ihc", intended_use) ~ "Virtual immunohistochemistry",
+    grepl ("synthetic_image_generation", intended_use) ~ "Synthetic image generation",
+    grepl("prognostication", intended_use) ~ "Response to treatment prediction",
+    grepl("diagnosis", intended_use) ~ "Lesion classification",
+    TRUE ~ NA
+  )) %>%
+  mutate(learning_paradigm = case_when(learning_paradigm == "supervised" ~ "Supervised learning",
+                                       learning_paradigm == "weakly_supervised" ~ "Weakly supervised learning",
+                                       learning_paradigm == "self_supervised" ~ "Self-supervised learning",
+                                       TRUE ~ NA)) %>%
+  mutate(model_type_and_architecture = case_when(model_architecture == "CNN" ~ "DL (CNN)",
+                                       model_architecture == "CNN SVM SGB" ~ "DL (CNN) and classic ML (multiple)",
+                                       model_architecture == "SVM" ~ "Classic ML (SVM)",
+                                       model_architecture == "LDA SVM NB DT KNN" ~ "Classic ML (multiple)",
+                                       model_architecture == "ViT CNN" ~ "DL (CNN and ViT)",
+                                       model_architecture == "diffusion_model" ~ "DL (diffusion model)",
+                                        model_architecture == "GAN" ~ "DL (GAN)",
+                                       TRUE ~ NA))
+  
+
+intended_use_summary <- reviewed_reports %>%
+  count(application_type, name = "n") %>%
+  mutate(percentage = round(100 * n / sum(n), 1)) %>%
+  arrange(desc(percentage))
+
+print(intended_use_summary)
+
+#write_json(intended_use_summary, paste0(output_dir, "intended_use_summary.json"), pretty =TRUE)
+
+
+  
+# Count publications by year & type
+application_type_counts_by_year <- reviewed_reports %>%
+  count(year, application_type)
+
+# Compute overall order (largest total count → first level)
+application_type_order <- c( "Cell count", "Area quantification", "Cell feature quantification", "Lesion classification","Biomarker prediction" , "Response to treatment prediction",  "Virtual immunohistochemistry" ,  "Synthetic image generation")
+
+application_type_palette <- c(
+  "Area quantification" = "#deebf7",
+  "Cell feature quantification"= "#9ecae1",
+  "Cell count" = "#3182bd",
+  "Lesion classification" = "#bae4b3",
+  "Biomarker prediction" = "#e6550d",
+  "Response to treatment prediction" = "#fd8d3c",
+  "Virtual immunohistochemistry" = "#feedde",
+  "Synthetic image generation" = "#fdbe85")
+
+# 3. Apply that ordering to the factor
+application_type_counts_by_year <- application_type_counts_by_year %>%
+  mutate(application_type = factor(application_type,
+                                   levels = application_type_order))
+
+# Get full range of years
+full_years <- seq(min(application_type_counts_by_year$year),
+                  max(application_type_counts_by_year$year))
+
+# Expand grid to get all combinations of year and application_type
+all_combinations <- expand_grid(
+  year = full_years,
+  application_type = unique(application_type_counts_by_year$application_type)
+)
+
+# Join to original data and fill in missing values with 0
+application_type_counts_by_year <- all_combinations %>%
+  left_join(application_type_counts_by_year, by = c("year", "application_type")) %>%
+  mutate(n = replace_na(n, 0))
+
+plot <- ggplot(application_type_counts_by_year,
+       aes(x = factor(year),
+           y = n,
+           fill = application_type)) +
+  geom_col() +
+  scale_fill_manual(
+    values = application_type_palette,
+    breaks = application_type_order
+  ) +
+  scale_y_continuous(
+    limits = c(0, 12),
+    breaks = 0:12
+  ) +
+  scale_x_discrete(
+    drop = FALSE  # ensures all factor levels are shown
+  ) +
+  labs(
+    x     = "Year",
+    y     = "Number of publications",
+    fill  = "Intended use"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid.minor.y = element_blank()
+  )
+
+print(plot)
+
+legend <- cowplot::get_legend(plot)
+plot_nolegend <- plot + theme(legend.position = "none")
+
+combined <- cowplot::plot_grid(
+  plot_nolegend,
+  cowplot::ggdraw(legend),
+  nrow = 1,
+  rel_widths = c(4.25, 2.75)
+)
+
+ggsave(
+  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/paper/figures/fig_7_results/intended_use.png",
+  plot = combined,    # Optional if it's the last plot drawn
+  width = 7,
+  height = 2.33,
+  dpi = 300,
+  units = "in"
+)
+```
+
+```{r}
+# Count publications by year & type
+learning_paradigm_counts_by_year <- reviewed_reports %>%
+  count(year, learning_paradigm)
+
+
+learning_paradigm_order <- c( "Supervised learning", "Weakly supervised learning", "Self-supervised learning")
+
+learning_paradigm_palette <- c(
+  "Supervised learning" = "#3182bd" ,
+  "Weakly supervised learning"= "#bae4b3",
+  "Self-supervised learning" = "#fd8d3c")
+
+# 3. Apply that ordering to the factor
+learning_paradigm_counts_by_year <- learning_paradigm_counts_by_year %>%
+  mutate(learning_paradigm = factor(learning_paradigm,
+                                   levels = learning_paradigm_order))
+
+# Get full range of years
+full_years <- seq(min(learning_paradigm_counts_by_year$year),
+                  max(learning_paradigm_counts_by_year$year))
+
+# Expand grid to get all combinations of year and application_type
+all_combinations <- expand_grid(
+  year = full_years,
+  learning_paradigm = unique(learning_paradigm_counts_by_year$learning_paradigm)
+)
+
+# Join to original data and fill in missing values with 0
+learning_paradigm_counts_by_year <- all_combinations %>%
+  left_join(learning_paradigm_counts_by_year, by = c("year", "learning_paradigm")) %>%
+  mutate(n = replace_na(n, 0))
+
+plot <- ggplot(learning_paradigm_counts_by_year,
+       aes(x = factor(year),
+           y = n,
+           fill = learning_paradigm)) +
+  geom_col() +
+  scale_fill_manual(
+    values = learning_paradigm_palette,
+    breaks = learning_paradigm_order
+  ) +
+  scale_y_continuous(
+    limits = c(0, 12),
+    breaks = 0:12
+  ) +
+  scale_x_discrete(
+    drop = FALSE  # ensures all factor levels are shown
+  ) +
+  labs(
+    x     = "Year",
+    y     = "Number of publications",
+    fill  = "Learning paradigm"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid.minor.y = element_blank()
+  )
+
+print(plot)
+
+legend <- cowplot::get_legend(plot)
+plot_nolegend <- plot + theme(legend.position = "none")
+
+combined <- cowplot::plot_grid(
+  plot_nolegend,
+  cowplot::ggdraw(legend),
+  nrow = 1,
+  rel_widths = c(4.25, 2.75)
+)
+
+
+ggsave(
+  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/paper/figures/fig_7_results/learning_paradigms.png",
+  plot = combined,   
+  width = 7,
+  height = 2.33,
+  dpi = 300,
+  units = "in"
+)
+```
+
+```{r}
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/output/analyze_vet_papers/"
+# Count publications by year & type
+model_type_and_architecture_counts_by_year <- reviewed_reports %>%
+  count(year, model_type_and_architecture)
+
+
+model_type_and_architecture_order <- c( "DL (CNN)", 
+                                        "DL (CNN and ViT)",
+                                        "DL (diffusion model)",
+                                        "DL (GAN)",
+                                        "DL (CNN) and classic ML (multiple)", 
+                                        "Classic ML (multiple)",
+                                        "Classic ML (SVM)")
+
+model_type_and_architecture_palette <- c(
+  "DL (CNN)" =  "#3182bd" ,
+  "DL (CNN and ViT)" = "#9ecae1",
+  "DL (diffusion model)" = "#deebf7",
+  "DL (GAN)" = "#bae4b3",
+  "DL (CNN) and classic ML (multiple)" =  "#fd8d3c",
+  "Classic ML (multiple)"=  "#feedde",
+  "Classic ML (SVM)" = "#fdbe85")
+  
+
+
+
+
+# 3. Apply that ordering to the factor
+model_type_and_architecture_counts_by_year <- model_type_and_architecture_counts_by_year%>%
+  mutate(model_type_and_architecture = factor(model_type_and_architecture,
+                                   levels = model_type_and_architecture_order))
+
+# Get full range of years
+full_years <- seq(min(model_type_and_architecture_counts_by_year$year),
+                  max(model_type_and_architecture_counts_by_year$year))
+
+# Expand grid to get all combinations of year and application_type
+all_combinations <- expand_grid(
+  year = full_years,
+  model_type_and_architecture = unique(model_type_and_architecture_counts_by_year$model_type_and_architecture)
+)
+
+# Join to original data and fill in missing values with 0
+model_type_and_architecture_counts_by_year <- all_combinations %>%
+  left_join(model_type_and_architecture_counts_by_year, by = c("year", "model_type_and_architecture")) %>%
+  mutate(n = replace_na(n, 0))
+
+plot <- ggplot(model_type_and_architecture_counts_by_year,
+       aes(x = factor(year),
+           y = n,
+           fill = model_type_and_architecture)) +
+  geom_col() +
+  scale_fill_manual(
+    values = model_type_and_architecture_palette,
+    breaks = model_type_and_architecture_order
+  ) +
+  scale_y_continuous(
+    limits = c(0, 12),
+    breaks = 0:12
+  ) +
+  scale_x_discrete(
+    drop = FALSE  # ensures all factor levels are shown
+  ) +
+  labs(
+    x     = "Year",
+    y     = "Number of publications",
+    fill  = "Model architecture"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid.minor.y = element_blank()
+  )
+
+print(plot)
+
+legend <- cowplot::get_legend(plot)
+plot_nolegend <- plot + theme(legend.position = "none")
+
+combined <- cowplot::plot_grid(
+  plot_nolegend,
+  cowplot::ggdraw(legend),
+  nrow = 1,
+  rel_widths = c(4.25, 2.75)
+)
+
+
+ggsave(
+  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation/paper/figures/fig_7_results/model_types.png",
+  plot = combined,    # Optional if it's the last plot drawn
+  width = 7,
+  height = 2.33,
+  dpi = 300,
+  units = "in"
+)
+```
+

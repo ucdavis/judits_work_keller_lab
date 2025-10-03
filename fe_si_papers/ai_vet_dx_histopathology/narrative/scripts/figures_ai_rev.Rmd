@@ -1,0 +1,123 @@
+---
+title: "figures_ai_rev"
+author: "Wulcan"
+date: "2025-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+Generate diagram figures for ai review paper with synthetic data
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(splines)
+
+# Simulate noisier data
+set.seed(123)
+n <- 20
+x <- seq(0, 10, length.out = n)
+y <- 2 * x + rnorm(n, sd = 6)  # MORE NOISE
+data <- data.frame(Input = x, Output = y)
+
+# Fit linear model
+lm_fit <- lm(Output ~ Input, data = data)
+data$linear_pred <- predict(lm_fit)
+
+# Fit ridiculous overfit model using high-degree spline
+overfit_fit <- lm(Output ~ bs(Input, df = n - 1), data = data)  # Overfit!
+data$overfit_pred <- predict(overfit_fit)
+
+# Plotting theme
+theme_custom <- theme_minimal(base_family = "Arial") +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10)
+  )
+
+
+p3 <- ggplot(data, aes(x = Input, y = Output)) +
+  geom_point() +
+  geom_line(aes(y = linear_pred, color = "Model"), size = 1) +
+  geom_segment(aes(xend = Input, yend = linear_pred, color = "Loss"), size = 0.5) +
+  scale_color_manual(name = NULL, values = c("Model" = "orange", "Loss" = "grey")) +
+  labs(x = "Input", y = "Output") +
+  theme_custom +
+  theme(
+    axis.title = element_text(family = "Arial", size = 24)
+  )
+
+#ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/dissertation/exit_seminar/lin_reg.png", p3, width = 3.5, height = 2.25, units = "in", dpi = 300)
+
+# Linear model plot
+p1 <- ggplot(data, aes(x = Input, y = Output)) +
+  geom_point() +
+  geom_line(aes(y = linear_pred, color = "Model"), size = 1) +
+  geom_segment(aes(xend = Input, yend = linear_pred, color = "Loss"), size = 0.5) +
+  scale_color_manual(name = NULL, values = c("Model" = "orange", "Loss" = "blue")) +
+  labs( x = "Input", y = "Output") +
+  theme_custom
+
+# Overfit model plot
+p2 <- ggplot(data, aes(x = Input, y = Output)) +
+  geom_point() +
+  geom_line(aes(y = overfit_pred, color = "Model"), size = 1) +
+  geom_segment(aes(xend = Input, yend = overfit_pred, color = "Loss"), size = 0.5) +
+  scale_color_manual(name = NULL, values = c("Model" = "orange", "Loss" = "blue")) +
+  labs(x = "Input", y = "Output") +
+  theme_custom
+
+print(p1)
+print(p2)
+# Save plot
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab//fe_si_papers/artificial_intelligence_in_veterinary_diagnostic_histopathology_a_scoping_review_and_survey_of_current_implementation//figures//fig_2_regression/regression.png", arrangeGrob(p1, p2, ncol = 2), 
+       width = 7, height = 3, dpi = 300)
+
+p3 <- ggplot(data, aes(x = Input, y = Output)) +
+  geom_point() +
+  geom_line(aes(y = linear_pred, color = "Model"), size = 1) +
+  geom_segment(aes(xend = Input, yend = linear_pred, color = "Loss"), size = 0.5) +
+  scale_color_manual(name = NULL, values = c("Model" = "orange", "Loss" = "blue")) +
+  labs(x = "Input", y = "Output") +
+  theme_custom +
+  theme(
+    axis.title = element_text(family = "Arial", size = 24)
+  )
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/dissertation/exit_seminar/lin_reg.png", p1, width = 3.5, height = 2.25, units = "in", dpi = 300)
+```
+
+```{r}
+
+
+# Generate example data for a ReLU activation curve
+x <- seq(-6, 6, length.out = 100)
+y <- pmax(0, x)
+data <- data.frame(x, y)
+
+# Plot with minimal styling and axes but without ticks or labels
+activation_plot <- ggplot(data, aes(x = x, y = y)) +
+  geom_line(size = 1, color = "black") +
+  theme_classic() +
+  theme(
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    plot.background = element_blank()
+  )
+
+# Show the plot
+activation_plot
+
+
+# Save plot
+ggsave("~/Library/CloudStorage/Box-Box/Projects/fe_si_papers/ai_in_vet_dx_histopath/figures//activation_function.png",  
+       width = 1, height = 1, dpi = 300)
+```
