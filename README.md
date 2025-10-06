@@ -30,6 +30,8 @@ This repo contains scripts etc for AI platforms used to process images/data
 - **fe_si_papers** 
 This repo contains folders for papers (finished and in progress) that JMW has 
 been involved with for the keller lab. 
+-**sample_size**
+Minifolder with strategy for calculating sample size for performance assessment
 
 ### Organization of subfolders
 Most subfolders are organized with the following folders:
