@@ -14,3 +14,7 @@
 [submodule "fe_si_images"]
 	path = fe_si_images
 	url = https://github.com/ucdavis/fe_si_images
+
+[submodule "samples_size"]
+	path = samples_size
+	url = https://github.com/ucdavis/samples_size
