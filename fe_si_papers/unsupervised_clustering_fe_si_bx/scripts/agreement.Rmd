@@ -10,13 +10,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Objective 
-Parse pathologist grades, compute mode grade, assess class imbalance and interobserver agreement
+Parse pathologist grades, compute mode grade, assess class imbalance and inter-observer agreement
 
-### Assign pathologist numbers
-Use same as for previous study (replacing PR wih MVB)
-
-
-```{r}
+## Libraries, functions and directories
+```{r, message=FALSE, warning=FALSE}
 library(readxl)
 library(jsonlite)
 library(tidyverse)
@@ -135,7 +132,7 @@ get_kappa_summary <- function(df, name) {
 plot_agreement <- function(df, 
                            type = c("binary", "ordinal", "size"), 
                            variable_name = "Variable", 
-                           output_dir = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/agreement/") {
+                           output_dir = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/agreement/") {
   # Choose palette and labels based on type
   type <- match.arg(type)
   if (type == "binary") {
@@ -203,12 +200,10 @@ plot_agreement <- function(df,
 ```
 
 
-### Parse pathologists grades
-Assign same pathologist numbers as previous study
+## Parse pathologists grades
+Assign same pathologist numbers as previous study (ai_quantification_fe_si_bx) replacing PR wih MVB
 ```{r}
-
-
-grade_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/input/grades/"
+grade_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/grades/"
 
 #Using same assignations as previous paper (replacing PR with MVB from same lab)
 
@@ -298,10 +293,11 @@ variable_frames_num <- map(variable_frames, \(df) {
 
 ```
 
-#### Compute majority opinion grade
+## Compute majority opinion grade
 I use mode and settle ties randomly (grades with >5 pathologists giving "nonassessable" -> NA)
 ```{r}
-reproducibility_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/agreement/"
+reproducibility_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/agreement/"
+
 majority_grades_mode <- map_dfc(variable_frames_num, ~{
   df <- .
   df %>%
@@ -316,11 +312,11 @@ majority_grades_mode <- map_dfc(variable_frames_num, ~{
     cbind(name = names_col, grade_cols)
   }
 
-write_json(majority_grades_mode, paste0(reproducibility_dir, "majority_grades.json"), pretty = TRUE)
+#write_json(majority_grades_mode, paste0(reproducibility_dir, "majority_grades.json"), pretty = TRUE)
 ```
 
-### Explore NA grades
-Assessed the image for each NA grade 
+## Explore NA grades
+Assessed the image for each NA grade
 ```{r}
 # Number of rows with at least one NA in any variable
 num_with_na <- sum(apply(majority_grades_mode, 1, function(x) any(is.na(x))))
@@ -328,7 +324,8 @@ rows_with_na <- majority_grades_mode[apply(majority_grades_mode, 1, function(x) 
 ```
 
 
-### Summarize grades & assess class imbalance (using min/max ratio)
+### Summarize grades & assess class imbalance 
+For each variable: percent of each (mode) grade and min/max ratio (to assess class imbalance)
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -379,8 +376,8 @@ For each variable with min/max ratio >0.2 (reasonable balanced classes)
   - Weighted kappa with linear weights for ordinal variables
 Parse to and print table for paper
 
-```{r}
-reproducibility_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/agreement//"
+```{r, message=FALSE, warning=FALSE}
+reproducibility_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/agreement//"
 
 variables <- names(variable_frames_num)
 
@@ -480,12 +477,10 @@ kappa_summary_for_pub <- kappa_summary %>%
          )  
          
          
-write_xlsx(kappa_summary_for_pub, paste0(reproducibility_dir, "agreement_summary_table.xlsx"))
+#write_xlsx(kappa_summary_for_pub, paste0(reproducibility_dir, "agreement_summary_table.xlsx"))
 ```
 
 ### Print agreement heatmaps for each variable
-#### Issues/ devitations
-Does not run
 ```{r}
 
 plot_cell_vE <- plot_agreement(variable_frames_num$villi_epithelium_lymphocytes_cellularity, "ordinal", "Lymphocyte cellularity - Villi epithelium" )

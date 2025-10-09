@@ -1,5 +1,5 @@
 ---
-title: "path_vs_ai_anovas"
+title: "ai_vs_path"
 author: "Wulcan"
 date: "2025-07-17"
 output: html_document
@@ -10,8 +10,9 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Objective
-Calculate correlations between pathologists (majority) grades and ai-derived quantiative features
+Calculate correlations between pathologists (majority) grades and ai-derived features
 
+### Libraries, functions and directories
 ```{r, message=FALSE, warning=FALSE}
 library(jsonlite)
 library(tidyverse)
@@ -22,9 +23,9 @@ options(scipen = 999)
 
 to_box <- "~/Library/CloudStorage/Box-Box/"
 
-parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_ai_features/")
+parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/parse_ai_features/")
 
-output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/ai_vs_path/"
+output_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/ai_vs_path/"
 
 plot_box_compartments <- function(df, path_feature, ai_feature) {
   
@@ -177,22 +178,12 @@ plot_box_morph <- function(df, path_feature, ai_feature) {
 ```
 
 ### Process features to be compared by compartment and layer
-compartment_correlations  <- compartment_correlations %>%
-  mutate(
-    p_value_report = case_when(
-      is.na(p_value) ~ NA_character_,
-      p_value < 0.0001 ~ "p < 0.0001",
-      p_value < 0.001 ~ "p < 0.001",
-      TRUE ~ paste0("p = ", format(round(p_value, 3), nsmall = 3))
-    )
-  )
-
 ```{r}
 
 subset_name <- "grading_sample"
 
 #Read in pathologist feature
-majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/agreement//majority_grades.json") %>%
+majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/agreement//majority_grades.json") %>%
   rename(image_fragment_mucosa_name = name,
          villi_lamina_propria_lymphocytes_junctional_gradient = villi_lamina_propria_lymphocytes_junctiona_gradient) 
 
@@ -843,10 +834,6 @@ for (name in names(morph_comparisons)) {
     dpi = 300
   )
 }
-```
-
-
-```{r}
 
 
 correlation <- bind_rows(compartment_correlations, lp_correlations, epi_correlations, morph_correlations)
@@ -913,15 +900,7 @@ correlation_for_paper <- residuals_and_correlations %>%
   
 
 
-write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
+#write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
 
-write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
+#write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
 ```
-
-
-
-
-
-
-
-
