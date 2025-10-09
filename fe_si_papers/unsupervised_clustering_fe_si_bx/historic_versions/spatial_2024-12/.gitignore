@@ -1,0 +1,10 @@
+grades/
+input/
+presentations/
+output/
+scripts/drafts/
+thresholds/
+assets/spatial_overview.pdf
+assets/spatial_overview.pptx
+**/.RHistory
+**/.DS_Store
