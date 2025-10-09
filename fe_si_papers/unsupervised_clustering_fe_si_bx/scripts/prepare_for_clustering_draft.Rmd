@@ -1,0 +1,813 @@
+---
+title: "cluster_prep"
+author: "Wulcan"
+date: "2025-06-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+###  Libraries and functions
+```{r, message=FALSE, warning=FALSE}
+library(jsonlite)
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(scales) 
+library(factoextra) #for pca vis
+library(RColorBrewer)
+library(cluster)
+library(pheatmap)
+
+
+to_box <- "~/Library/CloudStorage/Box-Box/"
+
+explore_unscaled_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/explore_unscaled/")
+
+cluster_prep_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/cluster_prep/")
+
+sub_name_translation <- c(
+  villi_lp   = "Villi Lamina propria",
+  crypts_lp  = "Crypts Lamina propria",
+  villi_epi  = "Villi Epithelium",
+  crypts_epi = "Crypts Epithelium"
+)
+
+
+# Custom renaming function: ONLY feature name
+rename_features_only <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    if (length(parts) < 3) return(var)  # Leave ID variable alone
+
+    feature_raw <- parts[3]
+
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clust",
+      feature_raw == "Size (mean)" ~ "Mean size",
+      feature_raw == "Size (sd)" ~ "SD size",
+      str_detect(feature_raw, "Lymphocyte distance \\(mean\\)") ~ "Mean dist",
+      str_detect(feature_raw, "Lymphocyte distance \\(sd\\)") ~ "SD dist",
+      str_detect(feature_raw, "Junctional distance \\(median\\)") ~ "Median jun dist",
+      TRUE ~ feature_raw)
+    feature
+  }, USE.NAMES = FALSE)
+}
+ 
+rename_custom_vars <- function(var_names) {
+  sapply(var_names, function(var) {
+    parts <- str_split(var, "_", n = 3)[[1]]
+    
+    # If not a 3-part name, return original
+    if (length(parts) < 3) return(var)
+
+    # Original components
+    layer <- parts[1]
+    compartment <- parts[2]
+    feature_raw <- parts[3]
+
+    # Abbreviate compartment
+    compartment_abbr <- case_when(
+      compartment == "Epithelium" ~ "Epi",
+      compartment == "Lamina propria" ~ "LP",
+      TRUE ~ compartment
+    )
+
+    # Custom feature name abbreviation
+    feature <- case_when(
+      feature_raw == "Count" ~ "Count",
+      feature_raw == "Epithelium-Lamina propria ratio" ~ "Epi-LP",
+      feature_raw == "% in clusters" ~ "Clust",
+      feature_raw == "Size (mean)" ~ "Mean size",
+      feature_raw == "Size (sd)" ~ "SD size",
+      str_detect(feature_raw, "distance \\(mean\\)") ~ "Mean dist",
+      str_detect(feature_raw, "distance \\(sd\\)") ~ "SD dist",
+      TRUE ~ feature_raw
+    )
+
+    paste0(feature, "\n", layer, " ", compartment_abbr)
+  }, USE.NAMES = FALSE)
+}
+
+
+
+prepare_pca_full_analysis <- function(df,
+                                      id_col = "image_fragment_mucosa_name",
+                                      exclude_cols = c("image_fragment_mucosa_name", "image_name", "fragment_name", "mucosa_name"),
+                                      scale_data = FALSE,
+                                      explore_dir = cluster_prep_dir,
+                                      prefix = subset_name) {
+  
+  if(!dir.exists(explore_dir)) dir.create(explore_dir, recursive = TRUE)
+
+  # Prepare data
+  df_for_pca <- df %>%
+    select(-all_of(exclude_cols)) %>%
+    drop_na()
+  
+  # Shorten variable names using provided rename function
+  short_var_names <- rename_custom_vars(names(df_for_pca))
+  colnames(df_for_pca) <- short_var_names
+  
+  # PCA
+  pca <- prcomp(df_for_pca, center = scale_data, scale. = scale_data)
+  
+  # Scree plot
+  scree_plot <- fviz_eig(pca, addlabels = TRUE, ylim = c(0, 100)) +
+    ggtitle(NULL) +
+    ylab("Percentage of variance") +
+    theme_bw(base_size = 9)
+  ggsave(file.path(explore_dir, paste0("scree_plot_", prefix, ".png")),
+         scree_plot, width = 7, height = 3.3, dpi = 300)
+  
+  print(scree_plot)
+  
+
+  
+  # Variable contributions
+  var_contrib <- get_pca_var(pca)$contrib %>% as.data.frame()
+  var_contrib <- var_contrib %>% 
+    rownames_to_column("Variable") %>%
+    arrange(desc(Dim.1))
+  
+  # Save contributions table
+  write_json(var_contrib, file.path(explore_dir, paste0("variable_contributions_", prefix, ".json")))
+  
+  loadings <- as.data.frame(pca$rotation) %>%
+    tibble::rownames_to_column(var = "Variable") %>%
+    pivot_longer(
+      cols = starts_with("PC"),
+      names_to = "PrincipalComponent",
+      values_to = "Loading"
+    ) %>%
+    filter(PrincipalComponent %in% paste0("PC", 1:4))  
+  
+  loadings$Variable <- str_replace_all(loadings$Variable, "\n", " - ")
+  
+  custom_order <- c(
+  "Count - Villi LP", "Mean dist - Villi LP", "SD dist - Villi LP",
+  "Count - Crypts LP", "Mean dist - Crypts LP", "SD dist - Crypts LP",
+  "Count - Villi Epi", "Mean dist - Villi Epi", "SD dist - Villi Epi",
+  "Count - Crypts Epi", "Mean dist - Crypts Epi", "SD dist - Crypts Epi",
+  "Mean size - Villi LP", "Mean size - Crypts LP",
+  "Mean size - Villi Epi", "Mean size - Crypts Epi",
+  "SD size - Villi LP", "SD size - Crypts LP",
+  "SD size - Villi Epi", "SD size - Crypts Epi",
+  "Epi-LP - Villi LP", "Epi-LP - Crypts LP"
+  )
+  
+  # Reorder Variable as factor
+  loadings$Variable <- factor(loadings$Variable, levels = custom_order)
+
+  
+  var_plot <- ggplot(loadings, aes(x = Variable, y = Loading)) +
+    geom_col(aes(fill = Variable)) +
+    facet_wrap(~ PrincipalComponent, scales = "free_y") +
+    theme_bw(base_size = 9) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = "Variable loadings by principal component",
+      y = "Loading", x = "", fill = "Variable"
+    )
+  
+  ggsave(file.path(explore_dir, paste0("var_load_by_PC_", prefix, ".png")),
+         var_plot, width = 7, height = 7, dpi = 300)
+  print(var_plot)
+  
+  # Generate and save biplots 
+  pc_count <- min(4, ncol(pca$x))  
+  
+  biplots <- list()
+  for(i in 1:(pc_count-1)) {
+    for(j in (i+1):pc_count) {
+      pcs <- c(i, j)
+      contrib_i <- sort(get_pca_var(pca)$contrib[, i], decreasing = TRUE)
+      contrib_j <- sort(get_pca_var(pca)$contrib[, j], decreasing = TRUE)
+      
+      
+      # Create biplot
+      biplot <- fviz_pca_biplot(pca, axes = pcs,
+                                geom.ind = "point",
+                               # select.var = list(name = top_vars),
+                                col.ind = "lightblue",
+                               pointsize = 1.2,
+                               labelsize = 3,
+                                col.var = "contrib",
+                                gradient.cols = c("#fd8d3c", "#f03b20", "#bd0026"),
+                                repel = TRUE) +
+        ggtitle(paste("Biplot PC", i, "vs PC", j)) +
+        theme_bw(base_size = 9)
+      
+      # Save plot
+      plot_name <- paste0("biplot_PC", i, "_PC", j, "_", prefix, ".png")
+      ggsave(file.path(explore_dir, plot_name),
+             biplot, width = 7, height = 3.5, dpi = 300)
+      
+      biplots[[paste0("PC", i, "_PC", j)]] <- biplot
+      
+      print(biplot)
+    }
+  }
+  
+  # Return results invisibly
+  invisible(list(
+    pca = pca,
+    df_for_pca = df_for_pca,
+    scree_plot = scree_plot,
+    var_contrib = var_contrib,
+    biplots = biplots
+  ))
+}
+
+
+plot_kmeans_elbow_silhouette <- function(pca, 
+                                         pcs = NULL, 
+                                         kmax = NULL, 
+                                         explore_dir = cluster_prep_dir,
+                                         prefix = subset_name) {
+  
+  df_for_clust <- as.data.frame(pca$x[, pcs])
+  
+  # Elbow plot (WSS)
+  elbow_plot <- fviz_nbclust(df_for_clust, kmeans, method = "wss", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Total within-cluster\nsum of squares"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)
+    ) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 1)))
+
+  # Save elbow plot
+  elbow_path <- file.path(explore_dir, paste0("elbow_plot_", prefix, ".png"))
+  ggsave(filename = elbow_path,
+         plot = elbow_plot, width = 7, height = 2.3, dpi = 300)
+  
+  print(elbow_plot)
+  
+  # Silhouette plot
+  silhouette_plot <- fviz_nbclust(df_for_clust, kmeans, method = "silhouette", k.max = kmax) +
+    labs(
+      x = "Number of clusters (k)",
+      y = "Average silhouette width"
+    ) +
+    ggtitle(NULL) +
+    theme_bw(base_size = 9, base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9)
+    ) +
+    scale_x_discrete(breaks = as.character(seq(1, kmax, by = 1)))
+  
+  # Save silhouette plot
+  silhouette_path <- file.path(explore_dir, paste0("silhouette_plot_", prefix, ".png"))
+  ggsave(filename = silhouette_path,
+         plot = silhouette_plot, width = 7, height = 2.3, dpi = 300)
+  
+  print(silhouette_plot)
+  
+  invisible(list(
+    df_for_clust = df_for_clust,
+    plots = list(elbow = elbow_plot, silhouette = silhouette_plot),
+    paths = list(elbow_plot = elbow_path, silhouette_plot = silhouette_path)
+  ))
+}
+
+cluster_k <- function(pca,
+                      best_k,
+                      original_df,
+                      pcs_used = NULL,
+                      dir = cluster_prep_dir,
+                      prefix = subset_name) {
+  set.seed(123)
+  
+  df_for_clust <- as.data.frame(pca$x[, pcs_used])
+
+  km <- kmeans(df_for_clust, centers = best_k, nstart = 25, iter.max = 100)
+  
+  sil <- silhouette(km$cluster, dist(df_for_clust))
+  sil_df <- as.data.frame(sil)
+  cluster_silhouette <- sil_df %>%
+    group_by(cluster) %>%
+    summarise(mean_silhouette = mean(sil_width), .groups = "drop") %>%
+    mutate(mean_silhouette = round(mean_silhouette, 2))
+  
+  
+  cluster_assignments <- original_df %>%
+    mutate(cluster = km$cluster[match(rownames(original_df), rownames(df_for_clust))])
+  
+  distances <- sqrt(rowSums((df_for_clust - km$centers[km$cluster, ])^2))
+  cluster_assignments$distance_to_center <- distances[match(rownames(original_df), rownames(df_for_clust))]
+  
+  cluster_medians <- cluster_assignments %>%
+    group_by(cluster) %>%
+    summarise(median_value = median(`Villi_Lamina propria_Count`, na.rm = TRUE)) %>%
+    arrange(median_value) %>%
+    mutate(new_cluster = row_number())
+  
+  cluster_assignments <- cluster_assignments %>%
+    left_join(cluster_medians, by = "cluster") %>%
+    mutate(cluster_label = paste0("Cluster ", new_cluster),
+           cluster_number = as.character(new_cluster)) %>%
+    select(- median_value)
+  
+  cluster_summary <- cluster_silhouette %>%
+    left_join(cluster_medians, by = "cluster") %>%
+    mutate(cluster_label = paste0("Cluster ", new_cluster)) %>%
+    select(new_cluster, cluster_label, mean_silhouette) %>%
+    arrange(new_cluster) %>%
+    mutate(cluster_number = as.character(new_cluster)) %>%
+    select(cluster_number, mean_silhouette)
+  
+  
+  write_json(cluster_assignments, file.path(dir, paste0("cluster_assignments_", prefix, ".json")), pretty = TRUE)
+  
+  palette <- if (best_k <= 8) brewer.pal(8, "Dark2")[1:best_k] else
+    if (best_k <= 12) brewer.pal(best_k, "Set3") else
+      colorRampPalette(brewer.pal(12, "Set3"))(best_k)
+  
+  make_pca_cluster_plot <- function(pc_x, pc_y) {
+    fviz_pca_ind(
+      pca,
+      axes = c(pc_x, pc_y),
+      geom.ind = "point",
+      pointshape = 21,
+      alpha.ind = 0.5,
+      fill.ind = factor(cluster_assignments$cluster_label[match(rownames(df_for_clust), rownames(original_df))]),
+      col.ind = "black",
+      palette = palette,
+      addEllipses = TRUE,
+      ellipse.level = 0.90,
+      repel = TRUE,
+      legend.title = "Cluster"
+    ) +
+    ggtitle(paste("Clusters on PC", pc_x, "vs PC", pc_y)) +
+    theme_bw(base_size = 9) +
+    theme(text = element_text(family = "Arial"),
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 9),
+          legend.title = element_text(size = 9),
+          legend.text = element_text(size = 8),
+          axis.text = element_text(size = 9),
+          axis.title = element_text(size = 9))
+  }
+
+  # Generate PCA cluster plots
+  pc_combinations <- list(c(1,2), c(1,3), c(1,4), c(2,3), c(2,4))
+  plots <- list()
+  for(pcs in pc_combinations) {
+    p <- make_pca_cluster_plot(pcs[1], pcs[2])
+    ggsave(filename = file.path(dir, paste0("pca_clusters_PC", pcs[1], "_PC", pcs[2], "_", prefix, ".png")),
+           plot = p, width = 7, height = 3.5, units = "in", dpi = 300)
+    plots[[paste0("PC", pcs[1], "_PC", pcs[2])]] <- p
+    print(p)
+  }
+  
+  # Boxplots of unscaled features
+  unscaled_features <- original_df %>%
+    select(where(is.numeric)) %>%
+    mutate(cluster_label = cluster_assignments$cluster_label,
+           cluster_number = cluster_assignments$cluster_number)
+
+  long_unscaled <- unscaled_features %>%
+    pivot_longer(cols = -c(cluster_label, cluster_number), names_to = "Feature", values_to = "Value") %>%
+    mutate(FeatureLabel = rename_custom_vars(Feature)) %>%
+    separate(FeatureLabel, into = c("FeatureShort", "Region"), sep = "\n", remove = FALSE)
+
+  feature_order <- c("Count", "Mean dist", "SD dist", "Mean size", "SD size", "Epi-LP")
+  region_order <- c("Villi LP", "Crypts LP", "Villi Epi", "Crypts Epi")
+
+  long_unscaled$FeatureShort <- factor(long_unscaled$FeatureShort, levels = feature_order)
+  long_unscaled$Region <- factor(long_unscaled$Region, levels = region_order)
+
+  boxplot_plot <- ggplot(long_unscaled, aes(x = cluster_number, y = Value)) +
+    geom_boxplot(outlier.size = 0.3, width = 0.6) +
+    facet_grid(FeatureShort ~ Region, scales = "free_y", switch = "y") +
+    theme_bw(base_size = 9) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text.y.left = element_text(angle = 0),
+          strip.text.x = element_text(size = 9)) +
+    labs(x = "Cluster", y = "Feature value", title = "Unscaled feature distribution by cluster")
+
+  ggsave(file.path(dir, paste0("boxplots_unscaled_features_", prefix, ".png")),
+         boxplot_plot, width = 10, height = 7, dpi = 300)
+
+  print(boxplot_plot)
+  
+  #Ranked heatmap of cluster medians
+  
+  custom_var_order <- c(
+    "Villi_Lamina propria_Count",
+    "Villi_Lamina propria_Lymphocyte distance (mean)",
+    "Villi_Lamina propria_Lymphocyte distance (sd)",
+    "Villi_Lamina propria_Epithelium-Lamina propria ratio",
+    "Crypts_Lamina propria_Count",
+    "Crypts_Lamina propria_Lymphocyte distance (mean)",
+    "Crypts_Lamina propria_Lymphocyte distance (sd)",
+    "Crypts_Lamina propria_Epithelium-Lamina propria ratio",
+    "Villi_Epithelium_Count",
+    "Villi_Epithelium_Lymphocyte distance (mean)",
+    "Villi_Epithelium_Lymphocyte distance (sd)",
+    "Crypts_Epithelium_Count",
+    "Crypts_Epithelium_Lymphocyte distance (mean)",
+    "Crypts_Epithelium_Lymphocyte distance (sd)",
+    "Villi_Lamina propria_Size (mean)",
+    "Villi_Lamina propria_Size (sd)",
+    "Crypts_Lamina propria_Size (mean)",
+    "Crypts_Lamina propria_Size (sd)",
+    "Villi_Epithelium_Size (mean)",
+    "Villi_Epithelium_Size (sd)",
+    "Crypts_Epithelium_Size (mean)",
+    "Crypts_Epithelium_Size (sd)"
+  )
+  
+  cluster_medians_all <- cluster_assignments %>%
+    group_by(cluster_number, cluster_label) %>%
+    summarise(across(matches("^(Crypts|Villi)"), 
+                   median, 
+                   .names = "{.col}_median"),
+            .groups = "drop")
+  
+  cluster_quartiles <- cluster_assignments %>%
+    group_by(cluster_number, cluster_label) %>%
+    summarise(across(matches("^(Crypts|Villi)"), list(q1 = ~quantile(., 0.25, na.rm = TRUE),
+                                                      q3 = ~quantile(., 0.75, na.rm = TRUE))), .groups = "drop")
+  
+  cluster_medians_all_extended <- cluster_medians_all %>%
+    left_join(cluster_quartiles, by = c("cluster_number", "cluster_label"))
+  
+  summary_long <- cluster_medians_all_extended %>%
+    select(cluster_number, ends_with("median"), ends_with("_q1"), ends_with("_q3")) %>%
+    pivot_longer(-cluster_number, names_to = "Variable", values_to = "Value") %>%
+    mutate(
+      Type = case_when(
+        grepl("_q1$", Variable) ~ "Q1",
+        grepl("_q3$", Variable) ~ "Q3",
+        grepl("_median$", Variable) ~ "Median",
+        TRUE ~ NA),
+      Variable = Variable %>%
+        str_remove("_median$") %>%
+        str_remove("_q1$") %>%
+        str_remove("_q3$")
+    )
+  
+ summary_long$Variable <- factor(summary_long$Variable, levels = custom_var_order)
+ summary_long$Type <- factor(summary_long$Type, levels = c("Median", "Q1", "Q3"))
+ 
+ summary_wide <- summary_long %>%
+  arrange(cluster_number, Variable, Type) %>%
+  unite("Var_Type", Variable, Type) %>%
+  pivot_wider(names_from = Var_Type, values_from = Value) %>%
+  mutate(across(where(is.numeric), ~ round(., 1))) %>%
+   left_join(cluster_summary) %>%
+   mutate(
+     `Count - villi lp (median, iqr)` = paste0(`Villi_Lamina propria_Count_Median`, " (", `Villi_Lamina propria_Count_Q1`, "-", `Villi_Lamina propria_Count_Q3`, ")"),
+     `Mean dist - villi lp (median, iqr)` = paste0(`Villi_Lamina propria_Lymphocyte distance (mean)_Median`, " (", `Villi_Lamina propria_Lymphocyte distance (mean)_Q1`, "-", `Villi_Lamina propria_Lymphocyte distance (mean)_Q3`, ")"),
+     `SD dist - villi lp (median, iqr)` = paste0(`Villi_Lamina propria_Lymphocyte distance (sd)_Median`, " (", `Villi_Lamina propria_Lymphocyte distance (sd)_Q1`, "-", `Villi_Lamina propria_Lymphocyte distance (sd)_Q3`, ")"),
+     `Epi-to-lp ratio - villi (median, iqr)` = paste0(`Villi_Lamina propria_Epithelium-Lamina propria ratio_Median`, " (", `Villi_Lamina propria_Epithelium-Lamina propria ratio_Q1`, "-", `Villi_Lamina propria_Epithelium-Lamina propria ratio_Q3`, ")"),
+     `Count - crypts lp (median, iqr)` = paste0(`Crypts_Lamina propria_Count_Median`, " (", `Crypts_Lamina propria_Count_Q1`, "-", `Crypts_Lamina propria_Count_Q3`, ")"),
+     `Mean dist - crypts lp (median, iqr)` = paste0(`Crypts_Lamina propria_Lymphocyte distance (mean)_Median`, " (", `Crypts_Lamina propria_Lymphocyte distance (mean)_Q1`, "-", `Crypts_Lamina propria_Lymphocyte distance (mean)_Q3`, ")"),
+     `SD dist - crypts lp (median, iqr)` = paste0(`Crypts_Lamina propria_Lymphocyte distance (sd)_Median`, " (", `Crypts_Lamina propria_Lymphocyte distance (sd)_Q1`, "-", `Crypts_Lamina propria_Lymphocyte distance (sd)_Q3`, ")"),
+     `Epi-to-lp ratio - crypts (median, iqr)` = paste0(`Crypts_Lamina propria_Epithelium-Lamina propria ratio_Median`, " (", `Crypts_Lamina propria_Epithelium-Lamina propria ratio_Q1`, "-", `Crypts_Lamina propria_Epithelium-Lamina propria ratio_Q3`, ")"),
+     `Count - villi epi (median, iqr)` = paste0(`Villi_Epithelium_Count_Median`, " (", `Villi_Epithelium_Count_Q1`, "-", `Villi_Epithelium_Count_Q3`, ")"),
+     `Mean dist - villi epi (median, iqr)` = paste0(`Villi_Epithelium_Lymphocyte distance (mean)_Median`, " (", `Villi_Epithelium_Lymphocyte distance (mean)_Q1`, "-", `Villi_Epithelium_Lymphocyte distance (mean)_Q3`, ")"),
+     `SD dist - villi epi (median, iqr)` = paste0(`Villi_Epithelium_Lymphocyte distance (sd)_Median`, " (", `Villi_Epithelium_Lymphocyte distance (sd)_Q1`, "-", `Villi_Epithelium_Lymphocyte distance (sd)_Q3`, ")"),
+      `Count - crypts epi (median, iqr)` = paste0(`Crypts_Epithelium_Count_Median`, " (", `Crypts_Epithelium_Count_Q1`, "-", `Crypts_Epithelium_Count_Q3`, ")"),
+     `Mean dist - crypts epi (median, iqr)` = paste0(`Crypts_Epithelium_Lymphocyte distance (mean)_Median`, " (", `Crypts_Epithelium_Lymphocyte distance (mean)_Q1`, "-", `Crypts_Epithelium_Lymphocyte distance (mean)_Q3`, ")"),
+     `SD dist - villi epi (median, iqr)` = paste0(`Crypts_Epithelium_Lymphocyte distance (sd)_Median`, " (", `Crypts_Epithelium_Lymphocyte distance (sd)_Q1`, "-", `Crypts_Epithelium_Lymphocyte distance (sd)_Q3`, ")"),
+     `Mean size - villi lp (median, iqr)` = paste0(`Villi_Lamina propria_Size (mean)_Median`, " (", `Villi_Lamina propria_Size (mean)_Q1`, "-", `Villi_Lamina propria_Size (mean)_Q3`, ")"),
+     `SD size - villi lp (median, iqr)` = paste0(`Villi_Lamina propria_Size (sd)_Median`, " (", `Villi_Lamina propria_Size (sd)_Q1`, "-", `Villi_Lamina propria_Size (sd)_Q3`, ")"),
+     `Mean size - crypts lp (median, iqr)` = paste0(`Crypts_Lamina propria_Size (mean)_Median`, " (", `Crypts_Lamina propria_Size (mean)_Q1`, "-", `Crypts_Lamina propria_Size (mean)_Q3`, ")"),
+     `SD size - crypts lp (median, iqr)` = paste0(`Crypts_Lamina propria_Size (sd)_Median`, " (", `Crypts_Lamina propria_Size (sd)_Q1`, "-", `Crypts_Lamina propria_Size (sd)_Q3`, ")"),
+     `Mean size - villi epi (median, iqr)` = paste0(`Villi_Epithelium_Size (mean)_Median`, " (", `Villi_Epithelium_Size (mean)_Q1`, "-", `Villi_Epithelium_Size (mean)_Q3`, ")"),
+     `SD size - villi epi (median, iqr)` = paste0(`Villi_Epithelium_Size (sd)_Median`, " (", `Villi_Epithelium_Size (sd)_Q1`, "-", `Villi_Epithelium_Size (sd)_Q3`, ")"),
+     `Mean size - crypts epi (median, iqr)` = paste0(`Crypts_Epithelium_Size (mean)_Median`, " (", `Crypts_Epithelium_Size (mean)_Q1`, "-", `Crypts_Epithelium_Size (mean)_Q3`, ")"),
+     `SD size - crypts epi (median, iqr)` = paste0(`Crypts_Epithelium_Size (sd)_Median`, " (", `Crypts_Epithelium_Size (sd)_Q1`, "-", `Crypts_Epithelium_Size (sd)_Q3`, ")")) %>%
+   rename(Cluster = cluster_number,
+          `Mean silhouette` = mean_silhouette) %>%
+   select(Cluster, `Mean silhouette`, `Count - villi lp (median, iqr)`: `SD size - crypts epi (median, iqr)`)
+
+
+  ranked_medians <- cluster_medians_all %>%
+    rename_with(~ gsub("_median$", "", .x), .cols = ends_with("_median")) %>%
+    select(cluster_number, all_of(custom_var_order)) %>%
+    column_to_rownames("cluster_number") %>%
+    as.data.frame() %>%
+    apply(2, rank) %>%
+    t() %>%
+    as.data.frame()
+  
+  pretty_labels <- gsub("\n", " ",
+                        rename_custom_vars(rownames(ranked_medians)))
+  rownames(ranked_medians) <- pretty_labels
+  
+  heatmap_plot <- pheatmap(ranked_medians,
+                         cluster_rows = FALSE,
+                         cluster_cols = FALSE,
+                         display_numbers = TRUE,
+                         main = "Cluster Rankings by Median Value",
+                         angle_col = 45,
+                         silent = TRUE)
+  # Save manually
+  ggsave(file.path(dir, paste0("ranked_cluster_heatmap_", prefix, ".png")),
+       plot = heatmap_plot[[4]], width = 7, height = 7, dpi = 300)
+  # Print to screen
+  print(heatmap_plot)
+  
+  
+  
+  
+  
+  invisible(list(
+    clustered_data = cluster_assignments,
+    cluster_summary =  summary_wide,
+    cluster_object = km,
+    pca_plots = plots,
+    boxplot = boxplot_plot
+  ))
+}
+
+
+
+  
+  
+
+  
+
+
+```
+
+
+
+### PCA and K-means Batch 1
+```{r}
+subset_name <- "batch_1"
+filtered_scaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_scaled_",subset_name ,".json")) %>%
+   select(- ends_with("_% in clusters")) %>%
+     select(- ends_with("_Junctional distance (median)")) 
+     
+  
+pca_prep <- prepare_pca_full_analysis(filtered_scaled)
+var_cont <- pca_prep$var_contrib
+
+
+#Elbows & Silhouettes Batch 1
+pca <- pca_prep$pca
+explore_ks <- plot_kmeans_elbow_silhouette(pca, pcs = 1:4, kmax = 30)
+
+#K-means
+filtered_unscaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_unscaled_",subset_name ,".json")) %>%
+   select(- ends_with("_% in clusters")) %>%
+     select(- ends_with("_Junctional distance (median)")) 
+
+k_means_9 <- cluster_k(pca, best_k = 9, filtered_unscaled, pcs_used = 1:4, dir = cluster_prep_dir, prefix = subset_name)
+
+k_means_data <- k_means_9$clustered_data
+```
+
+
+### PCA and k-means - full set
+
+
+```{r}
+subset_name <- "full"
+filtered_scaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_scaled_",subset_name ,".json")) %>%
+  select(- ends_with("_Junctional distance (median)")) 
+     
+  
+pca_prep <- prepare_pca_full_analysis(filtered_scaled)
+var_cont <- pca_prep$var_contrib
+
+#Elbows & Silhouettes 
+pca <- pca_prep$pca
+explore_ks <- plot_kmeans_elbow_silhouette(pca, pcs = 1:4, kmax = 30)
+```
+
+
+
+```{r}
+
+
+
+#K-means
+filtered_unscaled <- fromJSON(paste0(explore_unscaled_dir, "filtered_unscaled_",subset_name ,".json")) %>%
+     select(- ends_with("_Junctional distance (median)")) 
+
+k_means_9 <- cluster_k(pca, best_k = 9, filtered_unscaled, pcs_used = 1:4, dir = cluster_prep_dir, prefix = subset_name)
+
+k_means_data <- k_means_9$clustered_data
+```
+
+
+```{r}
+cluster_summary <- k_means_9$cluster_summary 
+
+
+
+# Step 1: Pivot longer all variables except Cluster and Mean Silhouette
+long_summary <- cluster_summary %>%
+  pivot_longer(-c(Cluster, `Mean Silhouette`), names_to = "Variable", values_to = "Value")
+
+# Step 2: Extract measurement type and location
+long_summary <- long_summary %>%
+  mutate(
+    Measure = case_when(
+      str_detect(Variable, "_Median") ~ "Median",
+      str_detect(Variable, "_Q1") ~ "Q1",
+      str_detect(Variable, "_Q3") ~ "Q3"
+    ),
+    CleanVar = Variable %>%
+      str_remove("_Median") %>%
+      str_remove("_Q1") %>%
+      str_remove("_Q3")
+  )
+
+# Step 3: Pivot wider to have columns: Cluster, CleanVar, Median, Q1, Q3
+wide_summary <- long_summary %>%
+  select(Cluster, `Mean Silhouette`, CleanVar, Measure, Value) %>%
+  pivot_wider(names_from = Measure, values_from = Value)
+
+wide_summary <- wide_summary %>%
+  mutate(
+    Median = as.numeric(Median),
+    Q1 = as.numeric(Q1),
+    Q3 = as.numeric(Q3)
+  )
+
+# Step 4: Combine into final format "median (q1 – q3)"
+cluster_summary_for_paper <- wide_summary %>%
+  mutate(Summary = sprintf("%.1f (%.1f–%.1f)", Median, Q1, Q3)) %>%
+  select(Cluster, `Mean Silhouette`, CleanVar, Summary) %>%
+  pivot_wider(names_from = CleanVar, values_from = Summary)
+
+# Optional: clean column names to title case and replace underscores
+colnames(cluster_summary_for_paper) <- colnames(cluster_summary_for_paper) %>%
+  str_replace_all("_", " ") %>%
+  str_to_title()
+
+# View result
+cluster_summary_for_paper
+
+```
+
+
+```{r}
+
+cluster_data <- k_means_9$clustered_data
+
+examples <- cluster_data %>%
+  group_by(cluster_label) %>%
+  slice_min(order_by = distance_to_center, n = 3, with_ties = FALSE) %>%
+  ungroup()
+
+write_xlsx(examples, paste0(cluster_prep_dir, "three_central_examples_from_each_cluster.xlsx"))
+```
+
+
+```{r}
+# Step 1: Select one cluster ID column, and rename it "Cluster"
+clean_summary <- cluster_summary %>%
+  transmute(Cluster = new_cluster, `Mean Silhouette` = mean_silhouette)
+
+# Step 2: Reorder and reshape the summary table with medians, Q1, Q3
+# Combine medians, q1, and q3 from the extended table
+summary_long <- cluster_summary %>%
+  select(cluster_number, all_of(custom_var_order), ends_with("_q1"), ends_with("_q3")) %>%
+  pivot_longer(-cluster_number, names_to = "Variable", values_to = "Value") %>%
+  mutate(
+    Type = case_when(
+      grepl("_q1$", Variable) ~ "Q1",
+      grepl("_q3$", Variable) ~ "Q3",
+      TRUE ~ "Median"
+    ),
+    Variable = Variable %>%
+      str_remove("_q1$") %>%
+      str_remove("_q3$")
+  )
+
+# Step 3: Reorder variables and types
+summary_long$Variable <- factor(summary_long$Variable, levels = custom_var_order)
+summary_long$Type <- factor(summary_long$Type, levels = c("Median", "Q1", "Q3"))
+
+# Step 4: Pivot to wide format with variables ordered by type
+summary_wide <- summary_long %>%
+  arrange(cluster_number, Variable, Type) %>%
+  unite("Var_Type", Variable, Type) %>%
+  pivot_wider(names_from = Var_Type, values_from = Value)
+
+# Step 5: Merge clean summary table with cluster-level values
+final_summary <- clean_summary %>%
+  left_join(summary_wide, by = c("Cluster" = "cluster_number"))
+
+# Step 6: Rename columns using pretty labels
+colnames(final_summary)[-1:-2] <- gsub(
+  "\n", " ",
+  rename_custom_vars(colnames(final_summary)[-1:-2])
+)
+
+```
+
+```{r}
+
+
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+
+custom_var_order <- c(
+  "Villi_Lamina propria_Count",
+  "Villi_Lamina propria_Lymphocyte distance (mean)",
+  "Villi_Lamina propria_Lymphocyte distance (sd)",
+  "Villi_Lamina propria_Epithelium-Lamina propria ratio",
+  "Crypts_Lamina propria_Count",
+  "Crypts_Lamina propria_Lymphocyte distance (mean)",
+  "Crypts_Lamina propria_Lymphocyte distance (sd)",
+  "Crypts_Lamina propria_Epithelium-Lamina propria ratio",
+  
+  "Villi_Epithelium_Count",
+  "Villi_Epithelium_Lymphocyte distance (mean)",
+  "Villi_Epithelium_Lymphocyte distance (sd)",
+  
+  "Crypts_Epithelium_Count",
+  "Crypts_Epithelium_Lymphocyte distance (mean)",
+  "Crypts_Epithelium_Lymphocyte distance (sd)",
+  
+  "Villi_Lamina propria_Size (mean)",
+  "Villi_Lamina propria_Size (sd)",
+  "Crypts_Lamina propria_Size (mean)",
+  "Crypts_Lamina propria_Size (sd)",
+  
+  "Villi_Epithelium_Size (mean)",
+  "Villi_Epithelium_Size (sd)",
+  "Crypts_Epithelium_Size (mean)",
+  "Crypts_Epithelium_Size (sd)"
+)
+
+
+
+# Step 1: Median summaries per cluster
+cluster_medians <- k_means_data %>%
+  group_by(cluster_label) %>%
+  summarise(across(matches("^(Crypts|Villi)"), median), .groups = "drop")
+
+# Step 2: Rank across clusters
+ranked_medians <- cluster_medians %>%
+  select(cluster_label, all_of(custom_var_order)) %>%  # ensure correct order
+  column_to_rownames("cluster_label") %>%
+  as.data.frame() %>%
+  apply(2, rank) %>%     # rank each column across clusters
+  t() %>%
+  as.data.frame()
+
+# Step 3: Apply clean labels
+pretty_labels <- gsub("\n", " ", rename_custom_vars(rownames(ranked_medians)))
+rownames(ranked_medians) <- pretty_labels
+
+
+
+# Step 4: Plot
+pheatmap(ranked_medians,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         display_numbers = TRUE,
+         main = "Cluster Rankings by Median Value",
+         filename = paste0(cluster_prep_dir, "ranked_cluster_heatmap.png"),
+         width = 7, height = 7)
+
+
+
+```
+
+
+```{r}
+pca_pres <- fviz_pca_var(pca,
+             repel = TRUE) +
+   ggtitle(NULL) +
+        theme_bw(base_size = 14)
+
+pca_pres
+
+ggsave(file.path("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/dissertation/exit_seminar/PCA_var.png"),
+         pca_pres, width = 11, height = 5, dpi = 300)
+
+
+```
+
+

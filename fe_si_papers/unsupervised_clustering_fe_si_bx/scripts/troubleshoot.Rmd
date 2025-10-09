@@ -1,0 +1,120 @@
+---
+title: "troubleshoot_mucosa_lists"
+author: "Wulcan"
+date: "2025-07-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(sf)
+
+mucosa_list_new  <- fromJSON( "~/Library/CloudStorage/Box-Box//judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_list_all.json") %>%
+  distinct()
+
+problem_segments <- mucosa_list_new %>%
+  filter(classification == "too_small")
+
+problem_fragments <- unique(problem_segments$image_fragment_name)
+problem_images <- unique(problem_segments$image_name)
+
+new_versions <- mucosa_list_new %>% filter(image_name %in% problem_images)
+
+mucosa_list_old <- fromJSON( "~/Library/CloudStorage/Box-Box//judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") %>%
+  mutate(image_fragment_name = paste(image_name, fragment_name, sep = "_"))  %>%
+  distinct()
+
+old_versions <- mucosa_list_old %>% filter(image_name %in% problem_images)
+
+
+new_versions <- new_versions %>% filter(image_name %in% old_versions$image_name)
+
+new_fragments_in_old<- new_versions %>% filter(image_fragment_name %in% old_versions$image_fragment_name)
+
+old_fragments_in_new <- old_versions %>% filter(image_fragment_name %in% new_versions$image_fragment_name)
+
+identical_obs <- intersect(new_fragments_in_old, old_fragments_in_new)
+
+differing_obs <- setdiff(new_fragments_in_old, old_fragments_in_new) %>%
+  bind_rows(setdiff(old_fragments_in_new, new_fragments_in_old))
+```
+
+
+```{r}
+library(fs)
+mucosa_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/"
+
+file_info_mucosa <- dir_info(path = mucosa_dir, type = "file")
+
+# Show only file name and creation time
+file_list_mucosa <- file_info_mucosa[, c("path", "modification_time")]
+
+# Optional: simplify to just file name
+file_list_mucosa$file <- path_file(file_list_mucosa$path)
+file_list_mucosa <- file_list_mucosa[, c("file", "modification_time")] %>%
+    mutate(image_fragment_mucosa_name = if_else(
+    str_ends(file, "_mucosa.geojson"),
+    str_remove(file, "_mucosa\\.geojson$"),
+    NA_character_
+  ))
+
+map_to_mucosa_dir <- "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/merge_model_output/map_to_mucosa/output/map_to_mucosa/"
+
+file_info_map_to_mucosa <- dir_info(path = map_to_mucosa_dir, type = "file")
+
+# Show only file name and creation time
+file_list_map_to_mucosa <- file_info_map_to_mucosa[, c("path", "modification_time")]
+
+# Optional: simplify to just file name
+file_list_map_to_mucosa$file <- path_file(file_list_map_to_mucosa$path)
+file_list_map_to_mucosa  <- file_list_map_to_mucosa [, c("file", "modification_time")] %>%
+    mutate(image_fragment_mucosa_name = if_else(
+    str_ends(file, "_fe_si_combos_pv2_mv2_mapped_to_mucosa.geojson"),
+    str_remove(file, "_fe_si_combos_pv2_mv2_mapped_to_mucosa\\.geojson$"),
+    NA_character_
+  )) %>%
+  filter(!is.na(image_fragment_mucosa_name))
+```
+
+```{r}
+mucosa_list_included <- mucosa_list_new %>%
+  filter(orientation_class == "adequate" | orientation_class == "marginal") %>%
+  filter(artefact_class == "adequate" | artefact_class == "marginal")
+
+mucosa_list_included_not_in_mucosa <- mucosa_list_included %>%
+  filter(!name %in% file_list_mucosa$image_fragment_mucosa_name)
+
+mucosa_list_included_not_in_mapped_to_mucosa <- mucosa_list_included %>%
+  filter(!name %in% file_list_map_to_mucosa$image_fragment_mucosa_name)
+```
+
+```{r}
+
+```
+#mucosa_list_old_b0  <- fromJSON( "~/Library/CloudStorage/Box-Box//judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json")
+
+#mucosa_list_old_b1  <- fromJSON( "~/Library/CloudStorage/Box-Box//judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_1.json")
+
+mucosa_list_old_b2_to_b6  <- fromJSON( "~/Library/CloudStorage/Box-Box//judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") %>%
+  mutate(image_fragment_name = paste(image_name, fragment_name,sep = "_"))
+
+
+```
+
+```{r}
+new_in_old <- mucosa_list_all %>%
+  filter(name %in% mucosa_list_old_b2_to_b6$name)
+```
+
+
+```{r}
+check <- st_read("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/merge_model_output/map_to_mucosa/output/map_to_mucosa/00B0125_T7_he_2025-02-06_01_01_fe_si_combos_pv2_mv2_mapped_to_mucosa.geojson")
+```

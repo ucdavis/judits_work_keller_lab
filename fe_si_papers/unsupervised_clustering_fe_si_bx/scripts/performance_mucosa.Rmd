@@ -1,0 +1,74 @@
+---
+title: "performance_mucosa"
+author: "Wulcan"
+date: "2025-07-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+The model "mucosa" in the fragment quality suite (fe_si_models/fragment_quality_suite/mucosa/)
+classifies mucosal segments based on if they contain small intestinal mucosa, and
+quality of the mucosa (orientation and percentage artefact).
+
+The performance metrics for each class compared to the majoiryt opinion of three pathologists 
+are calculated in fe_si_models/fragment_quality_suite/mucosa/scripts/validate_mucosa)
+
+This chunk is to calculate the performance specifically for the purpose of how it is used in this paper,
+namely to identify small intestinal mucosal segments of acceptable quality (adequate or marginal orientation and arteafct)
+and filter out automatically detected mucosal segments that eiter do not 
+contain any small intestinal mucosa, or have inadequate orientation or levels of artefact.
+
+
+```{r}
+library(writexl)
+library(jsonlite)
+library(tidyverse)
+comparison_df <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa_validation/mucosa_ai_and_ref.json")
+
+
+template <- comparison_df %>%
+  mutate(tp = case_when(
+    small_intestinal_mucosa_ref == 1 & orientation_ref != 3 & artefact_ref != 3 &
+    small_intestinal_mucosa_ai == 1 & orientation_ai != 3 & artefact_ai != 3 ~ TRUE,
+    TRUE ~ FALSE),
+    fp = case_when(
+      (small_intestinal_mucosa_ref == 0  | orientation_ref == 3 | artefact_ref == 3) &
+        small_intestinal_mucosa_ai == 1 & orientation_ai != 3 & artefact_ai != 3 ~ TRUE,
+      TRUE ~ FALSE),
+    tn = case_when(
+      (small_intestinal_mucosa_ref == 0 | orientation_ref == 3 |  artefact_ref == 3) &
+        (small_intestinal_mucosa_ai == 0 | orientation_ai == 3 | artefact_ai == 3) ~ TRUE,
+      TRUE ~ FALSE),
+    fn = case_when(
+      (small_intestinal_mucosa_ref == 1 & orientation_ref != 3 & artefact_ref != 3) &
+        (small_intestinal_mucosa_ai == 0 | orientation_ai == 3 | artefact_ai == 3) ~ TRUE,
+      TRUE ~ FALSE))
+
+summary_df <- template %>%
+  summarise(
+    tp = sum(tp),
+    fp = sum(fp),
+    tn = sum(tn),
+    fn = sum(fn)
+  ) %>%
+  mutate(
+    sensitivity = tp / (tp + fn),
+    ppv = tp / (tp + fp),
+    f1 = 2 * ppv * sensitivity / (ppv + sensitivity)
+  )
+
+write_xlsx(template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/performance_mucosa/performance_template_mucosa.xlsx")
+
+write_json(summary_df, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/performance_mucosa/performance_mucosa.json", pretty = TRUE)
+
+print(summary_df)
+```
+        
+        
+      
+```{r}
+```

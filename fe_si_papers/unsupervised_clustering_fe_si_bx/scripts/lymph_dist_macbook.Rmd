@@ -1,0 +1,602 @@
+---
+title: "lymphocyte_dist"
+author: "Wulcan"
+date: "2025-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+New version of lymphocyte feature extraction that is faster (does not calculate clusters)
+and more stable (allows multiple tries of reading in files)
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(sf)
+library(nngeo)
+Sys.setenv(OGR_GEOJSON_MAX_OBJ_SIZE = 0) #problem opening large file w/o this
+
+#to_box <- "~/Library/CloudStorage/Box-Box/"
+to_box <- "C:/Users/15303/Box/"
+
+read_sf_retry <- function(path, retries = 3, wait = 5) {
+  attempt <- 1
+  while (attempt <= retries) {
+    msg <- sprintf("  ↳ trying to open %s (attempt %d/%d)…", basename(path),
+                   attempt, retries)
+    cat(msg, "\n")
+
+    x <- tryCatch(
+      st_read(path, quiet = TRUE) |> st_set_crs(0),
+      error = function(e) NULL            # swallow the error, return NULL
+    )
+
+    if (!is.null(x)) return(x)            # success → return the object
+
+    Sys.sleep(wait)                       # wait a bit and try again
+    attempt <- attempt + 1
+  }
+  stop("failed")                          # let caller know it never worked
+}
+
+
+#Calculates the distance to closest neighbor, and the distance to the villi/crypts junction
+calculate_lymphocyte_distances <- function(mapped_to_mucosa, lymphocytes, pixel_length_um, dup_threshold_um = 0.2) {
+  library(dplyr)
+  library(sf)
+  library(nngeo)
+  
+  #Find and drop duplicate lymphocytes
+  threshold_px <- dup_threshold_um / pixel_length_um
+  
+  lymphocyte_centroids <- lymphocytes %>%
+    mutate(geometry = st_centroid(geometry))
+  
+  dup_lists <- st_is_within_distance(lymphocyte_centroids,
+                                     lymphocyte_centroids,
+                                     dist = threshold_px)
+  
+  to_drop <- logical(nrow(lymphocyte_centroids))
+  for (i in seq_along(dup_lists)) {
+    idx <- dup_lists[[i]]
+    idx <- idx[idx != i]        # remove self
+    to_drop[idx[idx > i]] <- TRUE  # keep deterministic first, drop later ones
+  }
+  lc_dedup <- lymphocyte_centroids[!to_drop, ]
+  
+
+  villi <- mapped_to_mucosa %>% 
+    filter(classification == "villi")
+  
+  crypts <- mapped_to_mucosa %>% 
+    filter(classification == "crypts")
+
+  junction <- st_intersection(
+    st_boundary(st_union(villi)),
+    st_boundary(st_union(crypts))
+  ) %>%
+    st_as_sf() %>%
+    rename(geometry = x)
+  
+
+  lymphocyte_distances <- lc_dedup %>%
+    mutate(
+      closest_junction_px = as.numeric(st_distance(geometry, junction)),
+      closest_junction_um = closest_junction_px * pixel_length_um
+    ) %>%
+    group_by(classification) %>%
+    group_split() %>%
+    lapply(function(group) {
+      if (nrow(group) < 2) {
+        # Not enough points for nearest neighbor
+        group$closest_neighbor_px <- NA_real_
+        group$closest_neighbor_um <- NA_real_
+      } else {
+        # Safe k = 2, self = FALSE ensures the closest *other* neighbor
+        nearest_neighbor <- st_nn(group, group, k = 2, returnDist = TRUE)
+        # Take the second  neighbor's distance (skip self)
+        closest_neighbor_pxs <- sapply(nearest_neighbor$dist, `[`, 2)
+        group$closest_neighbor_px <- closest_neighbor_pxs
+        group$closest_neighbor_um <- closest_neighbor_pxs * pixel_length_um
+      }
+      return(group)
+    }) %>%
+    bind_rows() %>%
+    mutate(
+      log_closest_junction_um = log10(closest_junction_um + 1),
+      log_closest_neighbor_um = log10(closest_neighbor_um + 1)
+    ) %>%
+    st_drop_geometry()
+
+  return(lymphocyte_distances)
+}
+
+# #Generate lymphocyte clusters
+# generate_lymphocyte_clusters <- function(lymphocytes, 
+#                                          pixel_length_um, 
+#                                          dbscan_eps_um, 
+#                                          dbscan_minPts, 
+#                                          buffer_um = 4) {
+#   library(dplyr)
+#   library(sf)
+#   library(dbscan)
+#   library(tibble)
+# 
+#   lymphocyte_centroids <- lymphocytes %>%
+#     mutate(geometry = st_centroid(geometry))
+# 
+#   # Store all input classifications
+#   all_classifications <- unique(lymphocyte_centroids$classification)
+# 
+#   # Process each group
+#   results<- lymphocyte_centroids %>%
+#     group_by(classification) %>%
+#     group_split() %>%
+#     lapply(function(group) {
+#       coords <- st_coordinates(group)
+#       eps_px <- dbscan_eps_um / pixel_length_um
+#       cl <- dbscan(coords, eps = eps_px, minPts = dbscan_minPts)
+#       group <- group %>% mutate(cluster_id = cl$cluster)
+#       
+#       cluster_sizes <- group %>%
+#         st_drop_geometry() %>%
+#         filter(cluster_id > 0) %>% 
+#         count(cluster_id, name = "cluster_n_lymphocytes")
+# 
+#       group_clusters <- group %>%
+#         filter(cluster_id > 0) %>%
+#         group_by(cluster_id) %>%
+#         summarize(
+#           geometry = st_union(geometry),
+#           cluster_n_lymphocytes = n(),
+#           image_name = first(image_name),
+#           fragment_name = first(fragment_name),
+#           mucosa_name = first(mucosa_name),
+#           objectType = first(objectType),
+#           isLocked = first(isLocked),
+#           .groups = "drop"
+#         ) %>%
+#         arrange(desc(cluster_n_lymphocytes)) %>%
+#         mutate(
+#           classification = paste0(unique(group$classification), "_cluster"),
+#           name = paste(classification, sprintf("%03d", row_number()), sep = "_"),
+#           log_cluster_n_lymphocytes = log10(cluster_n_lymphocytes + 1)
+#         ) %>%
+#         st_buffer(dist = buffer_um / pixel_length_um) %>%
+#         select(image_name:mucosa_name, name, classification, cluster_n_lymphocytes, log_cluster_n_lymphocytes, objectType, isLocked, geometry)
+#       
+#       group_points <- group %>%
+#         left_join(cluster_sizes, by = "cluster_id") %>%
+#         relocate(cluster_id, cluster_n_lymphocytes, .after = geometry)
+#       
+#       list(clusters = group_clusters, lymphocytes = group_points)
+#     })
+# 
+#   # Bind together
+#   lymphocyte_clusters <- bind_rows(lapply(results, `[[`, "clusters"))
+#   lymphocytes_with_id <- bind_rows(lapply(results, `[[`, "lymphocytes"))
+# 
+#   # Identify classifications that were missing from output
+#   present_classes <- unique(lymphocyte_clusters$classification)
+#   expected_classes <- paste0(all_classifications, "_cluster")
+#   missing_classes <- setdiff(expected_classes, present_classes)
+# 
+#   # Generate NA-filled rows for missing classifications
+#   if (length(missing_classes) > 0) {
+#     fallback_rows <- lapply(missing_classes, function(class_label) {
+#       tibble(
+#         image_name = unique(lymphocytes$image_name)[1],
+#         fragment_name = unique(lymphocytes$fragment_name)[1],
+#         mucosa_name = unique(lymphocytes$mucosa_name)[1],
+#         name = paste0(class_label, "_000"),
+#         classification = class_label,
+#         cluster_n_lymphocytes = 0,
+#         log_cluster_n_lymphocytes = NA_real_,
+#         objectType = NA_character_,
+#         isLocked = NA,
+#         geometry = st_sfc(st_geometrycollection(), crs = st_crs(lymphocytes))
+#       )
+#     }) %>%
+#       bind_rows()
+#     
+#     lymphocyte_clusters <- bind_rows(lymphocyte_clusters, fallback_rows)
+#   }
+# 
+#   return(list(
+#     clusters    = lymphocyte_clusters,
+#     lymphocytes = lymphocytes_with_id
+#   ))
+# }
+
+summarize_lymphocyte_features <- function(mapped_to_mucosa, lymphocyte_distances, pixel_area_um2) {
+  library(dplyr)
+  library(tidyr)
+  library(sf)
+  
+  expected_area_vars <- c(
+  "crypts_epithelium_area_um2", 
+  "crypts_lamina_propria_area_um2", 
+  "villi_epithelium_area_um2", 
+  "villi_lamina_propria_area_um2")
+  
+  add_missing_area_vars <- function(df, vars) {
+    for (v in vars) {
+      if (!v %in% names(df)) {
+      df[[v]] <- NA_real_
+      }
+    }
+    df
+  }
+  
+  #Calculate compartment areas per layer and epithelium crypts ratio
+  areas_summary <- mapped_to_mucosa %>%
+    filter(classification %in% c("villi_epithelium", "villi_lamina_propria", "crypts_epithelium", "crypts_lamina_propria")) %>%
+    mutate(
+      area_px2 = st_area(geometry),
+      area_um2 = as.numeric(area_px2) * pixel_area_um2  # ensure numeric for pivoting
+    ) %>%
+    st_drop_geometry() %>%
+    select(image_name, fragment_name, mucosa_name, classification, area_um2) %>%
+    mutate(classification = paste0(classification, "_area_um2")) %>%
+    pivot_wider(
+      names_from = classification,
+      values_from = area_um2
+    ) %>%
+    add_missing_area_vars(expected_area_vars) %>%
+    mutate(
+      crypts_epithelium_area_1000_um2 = crypts_epithelium_area_um2 / 1000,
+      crypts_lamina_propria_area_1000_um2 = crypts_lamina_propria_area_um2 / 1000,
+      villi_epithelium_area_1000_um2 = villi_epithelium_area_um2 / 1000,
+      villi_lamina_propria_area_1000_um2 = villi_lamina_propria_area_um2 / 1000,
+      villi_epithelium_lamina_propria_ratio = villi_epithelium_area_um2 / villi_lamina_propria_area_um2,
+      crypts_epithelium_lamina_propria_ratio = crypts_epithelium_area_um2 / crypts_lamina_propria_area_um2
+    )
+
+  # Summarize lymphocyte size and distances 
+  
+  expected_lymphocyte_vars <- c(
+  "classification", "measured_area_um2", "closest_junction_um", "closest_neighbor_um",
+  "log_closest_junction_um", "log_closest_neighbor_um")
+  
+  add_missing_lymphocyte_vars <- function(df, vars) {
+    for (v in vars) {
+      if (!v %in% names(df)) {
+      df[[v]] <- NA_real_
+      }
+    }
+    df
+  }
+ 
+  
+  lymphocytes_summary <- lymphocyte_distances %>%
+    add_missing_lymphocyte_vars(expected_lymphocyte_vars) %>%
+    select(all_of(expected_lymphocyte_vars)) %>%
+    group_by(classification) %>%
+    summarise(
+      count = n(),
+      
+      mean_log_closest_neighbor_um = mean(log_closest_neighbor_um, na.rm = TRUE),
+      sd_log_closest_neighbor_um = sd(log_closest_neighbor_um, na.rm = TRUE),
+      median_log_closest_neighbor_um = median(log_closest_neighbor_um, na.rm = TRUE),
+      iqr_log_closest_neighbor_um = IQR(log_closest_neighbor_um, na.rm = TRUE),
+      
+      mean_measured_area_um2 = mean(measured_area_um2, na.rm = TRUE),
+      sd_measured_area_um2 = sd(measured_area_um2, na.rm = TRUE),
+      
+      
+      mean_log_closest_junction_um = mean(log_closest_junction_um, na.rm = TRUE),
+      sd_log_closest_junction_um = sd(log_closest_junction_um, na.rm = TRUE),
+      median_log_closest_junction_um = median(log_closest_junction_um, na.rm = TRUE),
+      iqr_log_closest_junction_um = IQR(log_closest_junction_um, na.rm = TRUE),
+      .groups = "drop"
+      ) %>% 
+    
+    pivot_wider(
+      names_from = classification,
+      values_from =  everything(), 
+      names_glue = "{classification}_{.value}"
+    )
+  
+  expected_cluster_vars <- c(
+  "classification", "cluster_n_lymphocytes", "closest_junction_um", "closest_neighbor_um",
+  "log_cluster_n_lymphocytes", "log_closest_junction_um", "log_closest_neighbor_um")
+  
+  add_missing_cluster_vars <- function(df, vars) {
+    for (v in vars) {
+      if (!v %in% names(df)) {
+      df[[v]] <- NA_real_
+      }
+    }
+    df
+  }
+  
+
+  # # Summarize lymphocyte clusters size and distances
+  # lymphocyte_clusters_summary <- lymphocyte_cluster_distances %>%
+  #   add_missing_cluster_vars(expected_cluster_vars) %>%
+  #   select(all_of(expected_cluster_vars)) %>%
+  #   group_by(classification) %>%
+  #   summarise(
+  #     count = n(),
+  #     median_cluster_n_lymphocytes = median(cluster_n_lymphocytes, na.rm = TRUE),
+  #     iqr_cluster_n_lymphocytes = IQR(cluster_n_lymphocytes, na.rm = TRUE),
+  #     median_log_cluster_n_lymphocytes = median(log_cluster_n_lymphocytes, na.rm = TRUE),
+  #     iqr_log_cluster_n_lymphocytes = IQR(log_cluster_n_lymphocytes, na.rm = TRUE),
+  #     median_closest_junction_um = median(closest_junction_um, na.rm = TRUE),
+  #     iqr_closest_junction_um = IQR(closest_junction_um, na.rm = TRUE),
+  #     median_log_closest_junction_um = median(log_closest_junction_um, na.rm = TRUE),
+  #     iqr_log_closest_junction_um = IQR(log_closest_junction_um, na.rm = TRUE),
+  #     median_closest_neighbor_um = median(closest_neighbor_um, na.rm = TRUE),
+  #     iqr_closest_neighbor_um = IQR(closest_neighbor_um, na.rm = TRUE),
+  #     median_log_closest_neighbor_um = median(log_closest_neighbor_um, na.rm = TRUE),
+  #     iqr_log_closest_neighbor_um = IQR(log_closest_neighbor_um, na.rm = TRUE),
+  #     .groups = "drop"
+  #   ) %>%
+  #   pivot_wider(
+  #     names_from = classification,
+  #     values_from = c(
+  #       count,
+  #       median_cluster_n_lymphocytes, iqr_cluster_n_lymphocytes,
+  #       median_log_cluster_n_lymphocytes, iqr_log_cluster_n_lymphocytes,
+  #       median_closest_junction_um, iqr_closest_junction_um,
+  #       median_log_closest_junction_um, iqr_log_closest_junction_um,
+  #       median_closest_neighbor_um, iqr_closest_neighbor_um,
+  #       median_log_closest_neighbor_um, iqr_log_closest_neighbor_um
+  #     ),
+  #     names_glue = "{classification}_{.value}"
+  #   )
+  
+  
+  expected_vars <- c(
+  "crypts_epithelium_lymphocytes_count", "crypts_epithelium_area_1000_um2",
+  "crypts_lamina_propria_lymphocytes_count", "crypts_lamina_propria_area_1000_um2",
+  "villi_epithelium_lymphocytes_count", "villi_epithelium_area_1000_um2",
+  "villi_lamina_propria_lymphocytes_count", "villi_lamina_propria_area_1000_um2")
+  
+  add_missing_vars <- function(df, vars) {
+    for (v in vars) {
+      if (!v %in% names(df)) {
+        df[[v]] <- NA_real_
+      }
+    }
+    df
+  }
+  
+  # combine summarys and add area normalized counts
+  summary <- bind_cols(areas_summary, lymphocytes_summary) %>%
+    add_missing_vars(expected_vars) %>%
+    mutate(
+      crypts_epithelium_lymphocyte_count_per_1000_um2 = 
+        crypts_epithelium_lymphocytes_count / crypts_epithelium_area_1000_um2,
+      crypts_lamina_propria_lymphocyte_count_per_1000_um2 = 
+        crypts_lamina_propria_lymphocytes_count / crypts_lamina_propria_area_1000_um2,
+      villi_epithelium_lymphocyte_count_per_1000_um2 = 
+        villi_epithelium_lymphocytes_count / villi_epithelium_area_1000_um2,
+      villi_lamina_propria_lymphocyte_count_per_1000_um2 = 
+        villi_lamina_propria_lymphocytes_count / villi_lamina_propria_area_1000_um2)
+  
+  global_measured_area_summary <- lymphocyte_distances %>%
+  summarise(
+    mean_lymphocytes_measured_area_um2 = mean(measured_area_um2, na.rm = TRUE),
+    sd_lymphocytes_measured_area_um2 = sd(measured_area_um2, na.rm = TRUE)
+  )
+  # Add to summary
+  summary <- bind_cols(summary, global_measured_area_summary)
+  
+  return(summary)
+}
+
+
+#helper function for frames with no lymphocytes
+add_blank_lymphocyte_summary <- function(mapped_to_mucosa,
+                                         pixel_area_um2,
+                                         image_name,
+                                         fragment_name,
+                                         mucosa_name) {
+  
+  expected_area_vars <- c(
+  "crypts_epithelium_area_um2", 
+  "crypts_lamina_propria_area_um2", 
+  "villi_epithelium_area_um2", 
+  "villi_lamina_propria_area_um2")
+  
+  add_missing_area_vars <- function(df, vars) {
+    for (v in vars) {
+      if (!v %in% names(df)) {
+      df[[v]] <- NA_real_
+      }
+    }
+    df
+  }
+
+  # ---- 1) calculate the four compartment areas (+ 1000 µm² & ratios) ----
+  areas <- mapped_to_mucosa %>%
+    filter(classification %in%
+             c("villi_epithelium", "villi_lamina_propria",
+               "crypts_epithelium", "crypts_lamina_propria")) 
+  if(nrow(areas) == 0){
+    areas <- data.frame(
+      image_name = image_name,
+      fragment_name = fragment_name,
+      mucosa_name = mucosa_name,
+      crypts_epithelium_area_um2 = 0,
+      crypts_lamina_propria_area_um2 = 0,
+      villi_epithelium_area_um2 = 0,
+      villi_lamina_propria_area_um2 = 0,
+      crypts_epithelium_area_1000_um2 = 0,
+      crypts_lamina_propria_area_1000_um2 = 0,
+      villi_epithelium_area_1000_um2 = 0,
+      villi_lamina_propria_area_1000_um2 = 0,
+      villi_epithelium_lamina_propria_ratio = NA_real_,
+      crypts_epithelium_lamina_propria_ratio = NA_real_)
+  } else{
+    areas <- areas %>%
+    mutate(area_um2 = as.numeric(st_area(geometry)) * pixel_area_um2) %>%
+    st_drop_geometry() %>%
+    select(image_name, fragment_name, mucosa_name,
+           classification, area_um2) %>%
+    mutate(classification = paste0(classification, "_area_um2")) %>%
+    pivot_wider(names_from  = classification,
+                values_from = area_um2) %>%
+    add_missing_area_vars(expected_area_vars) %>%
+    mutate(
+      crypts_epithelium_area_1000_um2      = crypts_epithelium_area_um2 / 1000,
+      crypts_lamina_propria_area_1000_um2  = crypts_lamina_propria_area_um2 / 1000,
+      villi_epithelium_area_1000_um2       = villi_epithelium_area_um2    / 1000,
+      villi_lamina_propria_area_1000_um2   = villi_lamina_propria_area_um2/ 1000,
+      villi_epithelium_lamina_propria_ratio =
+        villi_epithelium_area_um2 / villi_lamina_propria_area_um2,
+      crypts_epithelium_lamina_propria_ratio =
+        crypts_epithelium_area_um2 / crypts_lamina_propria_area_um2)}
+  
+  
+  # ---- 2) zero-filled count/cluster columns ------------------------------
+  zeros <- tibble(
+    crypts_epithelium_lymphocytes_count             = 0,
+    crypts_lamina_propria_lymphocytes_count         = 0,
+    villi_epithelium_lymphocytes_count              = 0,
+    villi_lamina_propria_lymphocytes_count          = 0)
+
+  # ---- 3) combine and derive per-area rates ------------------------------
+  summary_row <- bind_cols(areas, zeros) %>%
+    mutate(
+      crypts_epithelium_lymphocyte_count_per_1000_um2 =
+        crypts_epithelium_lymphocytes_count / crypts_epithelium_area_1000_um2,
+      crypts_lamina_propria_lymphocyte_count_per_1000_um2 =
+        crypts_lamina_propria_lymphocytes_count / crypts_lamina_propria_area_1000_um2,
+      villi_epithelium_lymphocyte_count_per_1000_um2 =
+        villi_epithelium_lymphocytes_count / villi_epithelium_area_1000_um2,
+      villi_lamina_propria_lymphocyte_count_per_1000_um2 =
+        villi_lamina_propria_lymphocytes_count / villi_lamina_propria_area_1000_um2)
+
+ return(summary_row)
+}
+```
+
+#Reformat mucosa list run with old script to new format
+```{r}
+features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/")
+
+summaries <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_all.json"))
+
+new <- fromJSON(paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all_1_5.json"))
+
+
+select_features <- names(new)
+
+summaries <- summaries %>% select(select_features)
+
+start <- 1
+stop <- 658
+
+#write_json(summaries, paste0(features_dir, "feature_summaries/lymphocyte_feature_summaries_", subset_name, "_",  start, "_", stop, ".json"), pretty = TRUE)
+```
+
+
+```{r}
+start <- 659
+stop <- 2861
+
+model_version <- "fe_si_combos_pv2_mv2"
+subset_name <- "all"
+
+included_fragments <- fromJSON(paste0(
+  to_box, "judits_work_keller_lab/fe_si_models/fragment_quality_suite/fragments/output/process_reviewed_fragments/fragments_included_all.json")) %>%
+  distinct() 
+
+subset <- fromJSON(
+  paste0(to_box, "judits_work_keller_lab/fe_si_images/output/process_subset/subsets_all.json")) %>%
+  filter(image_name %in% included_fragments$image_name) %>%
+  distinct() %>%
+  select(image_name, pixel_length_um, pixel_area_um2)
+
+
+mucosa_list  <- fromJSON(paste0(to_box, "/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_list_all.json")) %>%
+  left_join(subset) %>%
+  filter((orientation_class == "adequate" | orientation_class == "marginal") & (artefact_class == "adequate" | artefact_class == "marginal")) %>%
+  distinct()
+
+image_fragment_mucosa_names <- mucosa_list$name
+
+map_to_mucosa_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_models/merge_model_output/map_to_mucosa//output/map_to_mucosa//")
+
+features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/")
+
+
+lymphocyte_features_summaries <- NULL
+
+error_log <- NULL
+```
+
+
+```{r}
+
+for (img_frag_muc in image_fragment_mucosa_names[start:stop]){
+  
+  message("Processing ", img_frag_muc)
+  
+  tryCatch({
+  
+    parts <- str_split(img_frag_muc, "_")[[1]]
+    
+    muc  <- parts[length(parts)]
+    frag <- parts[length(parts) - 1]
+    img <- paste(parts[1:(length(parts) - 2)], collapse = "_")
+    
+    mucosa_info <- mucosa_list %>% filter(name == img_frag_muc)
+    pixel_length_um <- mucosa_info$pixel_length_um
+    pixel_area_um2 <- mucosa_info$pixel_area_um2
+    
+    mapped_to_mucosa_path  <- paste0(map_to_mucosa_dir, img_frag_muc, "_", model_version, "_mapped_to_mucosa.geojson")
+    mapped_to_mucosa <- read_sf_retry(mapped_to_mucosa_path) %>%
+      mutate(area_px2 = st_area(geometry),
+             area_um2 = area_px2 * pixel_area_um2)
+    
+    lymphocytes_path <- paste0(map_to_mucosa_dir, img_frag_muc, "_", model_version, "_mapped_to_mucosa_lymphocytes.geojson")
+    
+    lymphocytes <- read_sf_retry(lymphocytes_path)
+    
+    print(paste0("nrow lymphocytes is: ", nrow(lymphocytes)))
+    
+    if(nrow(lymphocytes) == 0) {
+      print(paste0("nrow lymphocytes is: ", nrow(lymphocytes), " for segment ", img_frag_muc, 
+                   " printing empty row and skipping to next"))
+      summary_row <-  add_blank_lymphocyte_summary(mapped_to_mucosa, 
+                                                  pixel_area_um2, 
+                                                  img,
+                                                  frag,
+                                                  muc)
+      lymphocyte_features_summaries <- bind_rows(lymphocyte_features_summaries, summary_row)
+      
+      next
+    } 
+    
+    #calculate distance to closest neighbor for lymphocytes
+    lymphocyte_distances <- calculate_lymphocyte_distances(mapped_to_mucosa, lymphocytes, pixel_length_um)
+    
+    lymphocytes <- lymphocytes %>% filter(name %in% lymphocyte_distances$name)
+    
+    
+    write_json(lymphocyte_distances, paste0(features_dir, "/lymphocyte_distances/", img_frag_muc, "_lymphocyte_distances.json"), pretty = TRUE)
+    
+    lymphocyte_features_summary <- summarize_lymphocyte_features(mapped_to_mucosa, lymphocyte_distances, pixel_area_um2)
+    
+    lymphocyte_features_summaries <- bind_rows(lymphocyte_features_summaries, lymphocyte_features_summary) 
+    
+    write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summaries/lymphocyte_feature_summaries_", subset_name, "_",  start, "_", stop, "json"), pretty = TRUE)
+    
+    }, error = function(e) {
+    message("Failed to process: ", img_frag_muc, " with error: ", e$message)
+    error_log[[img_frag_muc]] <<- e$message
+  })
+} 
+  
+write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summaries/lymphocyte_feature_summaries_", subset_name, "_",  start, "_", stop, ".json"), pretty = TRUE)
+
+write_json(error_log, paste0(features_dir, "feature_summaries/lymphocyte_feature_summary_errors_", subset_name, "_",  start, "_", stop, ".json"), pretty = TRUE)
+```
+
