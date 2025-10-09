@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Objective
-Calculate correlations between pathologists (majority) grades and ai-derived features
+Calculate correlations between pathologists (majority) grades and ai-derived features in "pathologist grading set"
 
 ### Libraries, functions and directories
 ```{r, message=FALSE, warning=FALSE}
