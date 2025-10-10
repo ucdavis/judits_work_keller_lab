@@ -349,11 +349,9 @@ message(paste0("Included fragments, WSIs n = ", length(unique(included_fragments
 message(paste0("Included fragments, fragments n = ", nrow(included_fragments)))
 
 ```
-UPDATE FROM HERE
+
 ### Processed mucosa
-#### Issues/Deviations
-One fragment (u42o_07) is lost between "included_fragments" and "mucosa". I explored the error (and commented on it in <fe_si_models/fragment_quality_suite/mucosa/scripts/mucosa> and it has to do with a forbidden linestring being produced by an intersection. Since this error is so rare, and the fragment had already been classified as inadequate orientation I left is unaddressed.
-)
+
 ```{r}
 library(jsonlite)
 library(tidyverse)
@@ -361,8 +359,8 @@ mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_
   distinct() 
 
 message(paste0("Processed mucosa, images n = ", length(unique(mucosa$image_name))))
-message(paste0("Processed mucosa, fragments n = ", (length(unique(mucosa$image_fragment_name))+1))) # see devitations
-message(paste0("Processed mucosa, segments n = ", (nrow(mucosa)+1))) # see devitations
+message(paste0("Processed mucosa, fragments n = ", length(unique(mucosa$image_fragment_name)))) # see devitations
+message(paste0("Processed mucosa, segments n = ", nrow(mucosa)))
 
 too_small <- mucosa %>% filter(classification == "too_small")
 no_mucosa <- mucosa %>% filter(classification == "no_mucosa")
@@ -370,7 +368,7 @@ poor_quality <- mucosa %>% filter(orientation_class == "inadequate" | artefact_c
 
 message(paste0("Too small, mucosal segments n = ", nrow(too_small)))
 message(paste0("No mucosa, mucosal segments n = ", nrow(no_mucosa)))
-message(paste0("Poor quality, mucosal segments n = ", (nrow(poor_quality) + 1))) # see deviations
+message(paste0("Poor quality, mucosal segments n = ", nrow(poor_quality))) # see deviations
 ```
 
 
