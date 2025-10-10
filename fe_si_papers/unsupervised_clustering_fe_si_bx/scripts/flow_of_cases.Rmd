@@ -350,126 +350,39 @@ message(paste0("Included fragments, fragments n = ", nrow(included_fragments)))
 
 ```
 UPDATE FROM HERE
-### Processing errors
+### Processed mucosa
+#### Issues/Deviations
+One fragment (u42o_07) is lost between "included_fragments" and "mucosa". I explored the error (and commented on it in <fe_si_models/fragment_quality_suite/mucosa/scripts/mucosa> and it has to do with a forbidden linestring being produced by an intersection. Since this error is so rare, and the fragment had already been classified as inadequate orientation I left is unaddressed.
+)
 ```{r}
 library(jsonlite)
 library(tidyverse)
-
-included_fragments <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/fragments/output/process_reviewed_fragments/fragments_included_all.json") %>%
+mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_all_with_additional.json") %>%
   distinct() 
 
-mucosa_list_b0 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json") 
-mucosa_list_b1 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_1.json") 
-mucosa_list_b2_to_b6 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") 
+message(paste0("Processed mucosa, images n = ", length(unique(mucosa$image_name))))
+message(paste0("Processed mucosa, fragments n = ", (length(unique(mucosa$image_fragment_name))+1))) # see devitations
+message(paste0("Processed mucosa, segments n = ", (nrow(mucosa)+1))) # see devitations
 
-mucosa_list <- bind_rows(mucosa_list_b0, mucosa_list_b1, mucosa_list_b2_to_b6) %>%
-  distinct()  %>%
-  mutate(image_fragment_name = paste(image_name, fragment_name, sep = "_"))
+too_small <- mucosa %>% filter(classification == "too_small")
+no_mucosa <- mucosa %>% filter(classification == "no_mucosa")
+poor_quality <- mucosa %>% filter(orientation_class == "inadequate" | artefact_class == "inadequate")
 
-included_fragments_in_mucosa <- included_fragments %>%
-  filter(image_fragment_name %in% mucosa_list$image_fragment_name)
-
-lost_fragments <- included_fragments %>%
-  filter(!image_fragment_name  %in% mucosa_list$image_fragment_name) 
-
-lost_image_fragment_names <- lost_fragments$image_fragment_name
-
-#Did I map layers? #yes n = 31 #no = 87
-map_to_fragment_dir <- paste0("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/merge_model_output/map_to_fragment/output/map_to_fragment/") 
-
-map_to_fragment_files <- list.files(map_to_fragment_dir)
-matching_lost_image_fragment_names <- lost_image_fragment_names[
-  sapply(lost_image_fragment_names, function(name) any(startsWith(map_to_fragment_files, name)))
-  ]
-
-non_matching_lost_image_fragment_names <- lost_image_fragment_names[
-  !sapply(lost_image_fragment_names, function(name) any(startsWith(map_to_fragment_files, name)))
-]
-
-lost_fragments_not_mapped <- lost_fragments %>% 
-  filter(image_fragment_name %in% non_matching_lost_image_fragment_names)
-
-errors <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_platforms/aiforia/output/ia_results/errors.geojson") %>%
-  filter(error == "Transferred a partial file [cloud.aiforia.com]: transfer closed with outstanding read data remaining")
-
-lost_fragments_aiforia_errors <- lost_fragments %>% 
-  filter(image_fragment_name %in% non_matching_lost_image_fragment_names) %>%
-  filter(image_name %in% errors$image_name)
-
-failed_mucosa <- lost_fragments %>% 
-  filter(image_fragment_name %in% matching_lost_image_fragment_names)
-
-write_json(failed_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/image_fragments_failed_mucosa.json", pretty = TRUE)
-
-length(unique(lost_fragments_mapped$image_name))
-
-message(paste0("Processing errors, fragments n = ", nrow(lost_fragments)))
-message(paste0("Aiforia download errors, fragments n = ",nrow(lost_fragments_aiforia_errors))) 
-message(paste0("Mucosa processing errors, fragments n = ",nrow(failed_mucosa))) 
+message(paste0("Too small, mucosal segments n = ", nrow(too_small)))
+message(paste0("No mucosa, mucosal segments n = ", nrow(no_mucosa)))
+message(paste0("Poor quality, mucosal segments n = ", (nrow(poor_quality) + 1))) # see deviations
 ```
 
 
-### Processed mucosa
-```{r, warning=FALSE}
-
-patient_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>% select(image_name, bx_id, in_labl, vmacs_patient_id)
-
-mucosa_list_b0 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json") 
-mucosa_list_b1 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_1.json") 
-mucosa_list_b2_to_b6 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") 
-
-mucosa_list <- bind_rows(mucosa_list_b0, mucosa_list_b1, mucosa_list_b2_to_b6) %>%
-  distinct()  %>%
-  left_join(patient_info) %>%
-  mutate(image_fragment = paste(image_name, fragment_name, sep = "_"))
-
-unique_local_pt <- unique(mucosa_list$vmacs_patient_id)
-outside_cases <- mucosa_list %>% filter(in_labl & is.na(vmacs_patient_id)) 
-unique_outside_bx <- unique(outside_cases$bx_id)
-
-message(paste0("Mucosa, patients n = ", length(unique_local_pt) + length(unique_outside_bx)))
-message(paste0("Mucosa, WSIs n = ", length(unique(mucosa_list$image_name))))
-message(paste0("Mucosa, fragments n = ", length(unique(mucosa_list$image_fragment))))
-message(paste0("Mucosa, mucosal segments n = ", nrow(mucosa_list)))
-
-
-
-
-
-```
-
-### Excluded mucosa
-```{r, warning=FALSE}
-
-patient_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>% select(image_name, bx_id, in_labl, vmacs_patient_id)
-
-mucosa_list_b0 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json") 
-mucosa_list_b1 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_1.json") 
-mucosa_list_b2_to_b6 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") 
-
-mucosa_list <- bind_rows(mucosa_list_b0, mucosa_list_b1, mucosa_list_b2_to_b6) %>%
-  distinct()  %>%
-  left_join(patient_info) %>%
-  mutate(image_fragment = paste(image_name, fragment_name, sep = "_")) 
-
-no_si <- mucosa_list %>% filter(classification == "no_mucosa")
-inadequate_artefact <- mucosa_list %>% filter(artefact_class == "inadequate")
-inadequate_orientation <- mucosa_list %>% filter(orientation_class == "inadequate")
-```
 
 ### Included mucosa
 ```{r, warning=FALSE}
 
 patient_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>% select(image_name, bx_id, in_labl, vmacs_patient_id)
 
-mucosa_list_b0 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json") 
-mucosa_list_b1 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_1.json") 
-mucosa_list_b2_to_b6 <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_batch_2_to_6.json") 
-
-included_mucosa <- bind_rows(mucosa_list_b0, mucosa_list_b1, mucosa_list_b2_to_b6) %>%
+included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_all_with_additional.json") %>%
   distinct()  %>%
   left_join(patient_info) %>%
-  mutate(image_fragment = paste(image_name, fragment_name, sep = "_")) %>%
   filter((artefact_class == "adequate" | artefact_class == "marginal")
          & (orientation_class == "adequate" | orientation_class == "marginal"))
 
@@ -481,29 +394,15 @@ message(paste0("Included mucosa, patients n = ", length(unique_local_pt) + lengt
 message(paste0("Included mucosa, WSIs n = ", length(unique(included_mucosa$image_name))))
 message(paste0("Included mucosa, fragments n = ", length(unique(included_mucosa$image_fragment))))
 message(paste0("Included mucosa, mucosal segments n = ", nrow(included_mucosa)))
-```
-
-```{r}
-
-unique_local_pt <- unique(mucosa_list$vmacs_patient_id)
-outside_cases <- mucosa_list %>% filter(in_labl & is.na(vmacs_patient_id)) 
-unique_outside_bx <- unique(outside_cases$bx_id)
-
-message(paste0("Mucosa, patients n = ", length(unique_local_pt) + length(unique_outside_bx)))
-message(paste0("Mucosa, WSIs n = ", length(unique(mucosa_list$image_name))))
-message(paste0("Mucosa, fragments n = ", length(unique(mucosa_list$image_fragment))))
-message(paste0("Mucosa, mucosal segments n = ", nrow(mucosa_list)))
-
-
-
-
 
 ```
 
-#### WSI batches for processing
+#### Processing batches and data partitioning
 The WSIs were split into batches for processing (batch 0 to batch 6).
-Batch 0 is the sample pulled for grading (validation), otherwise the split is arbitrary 
-(based on which images were already uploaded to aiforia on time of scanning)
+Batch 0 is the sample pulled for grading (pathologist_grading_set see <scripts/grading_sample> for sampling), otherwise the split is arbitrary (based on which images were already uploaded to aiforia on time of scanning). 
+Batch 1 only contains "local" cases scanned in CRL reno. It does not contain any model development or test images and was used for tuning clustering ("feature_tuning_set")
+##### Issues / Deviations
+The split was not retained
 
 ```{r}
 library(jsonlite)
@@ -537,48 +436,43 @@ batch_6 <- fromJSON(paste0(output_dir, "batch_6.json")) %>%
 
 all_batches <- bind_rows(batch_0, batch_1, batch_2, batch_3, batch_4, batch_5, batch_6)
 
-all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json") %>%
-  left_join(all_batches)
+#all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json") %>%
+  #left_join(all_batches)
 
-write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json", pretty = TRUE)
-```
+#write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json", pretty = TRUE)
 
-
-
-
-
-#### Use sets 
-```{r}
 all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json") 
 
-mucosa_list_all <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_list_all.json") %>%
-  filter((orientation_class == "adequate" | orientation_class == "marginal") &
-           (artefact_class == "adequate" | artefact_class == "marginal")) %>%
+included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_all_with_additional.json") %>%
+  distinct()  %>%
+  left_join(patient_info) %>%
+  filter((artefact_class == "adequate" | artefact_class == "marginal")
+         & (orientation_class == "adequate" | orientation_class == "marginal")) %>%
   filter(image_name %in% all_wsis$image_name)
 
 
-mucosa_image_names <- unique(mucosa_list_all$image_name)
+mucosa_image_names <- unique(included_mucosa$image_name)
 
-development_wsis <- all_wsis %>% filter(use_set_labl_2020 == "training" | use_set_labl_2020 == "tuning")
+model_development_set <- all_wsis %>% filter(use_set_labl_2020 == "training" | use_set_labl_2020 == "tuning")
 
-model_test_wsis <- all_wsis %>% filter(use_set_labl_2020 == "test")
+model_test_set <- all_wsis %>% filter(use_set_labl_2020 == "test")
 
-pilot_features_assessment_wsis <- all_wsis %>% filter(processing_batch == "batch_1") %>%
+feature_tuning_set <- all_wsis %>% filter(processing_batch == "batch_1") %>%
   filter(image_name %in% mucosa_image_names)
 
-pilot_features_assessment_mucosa <- mucosa_list_all %>% 
-  filter(image_name %in% pilot_features_assessment_wsis$image_name) %>%
+feature_tuning_set_mucosa <- included_mucosa %>% 
+  filter(image_name %in% feature_tuning_set$image_name) %>%
   distinct()
 
-path_vs_ai_assessment_wsis <- all_wsis %>% filter(processing_batch == "batch_0") 
+pathologist_grading_set_wsis <- all_wsis %>% filter(processing_batch == "batch_0") 
 
-path_vs_ai_assessment_mucosal_segment <- mucosa_list_all %>% 
-  filter(image_name %in% path_vs_ai_assessment_wsis $image_name) %>%
+pathologist_grading_set_wsis_mucosal_segment <- included_mucosa %>% 
+  filter(image_name %in% pathologist_grading_set_wsis$image_name) %>%
   distinct()
 
-message(paste0("WSIs used for model development, n = ", nrow(development_wsis)))
-message(paste0("WSIs used for model testing, n = ", nrow(model_test_wsis)))
-message(paste0("WSIs used for pathologist concordance assessment = ", nrow(path_vs_ai_assessment)))
-message(paste0("WSIs used for feature screening n = ", nrow(pilot_features_assessment)))
+message(paste0("WSIs used for model development, n = ", nrow(model_development_set)))
+message(paste0("WSIs used for model testing, n = ", nrow(model_test_set)))
+message(paste0("WSIs used for pathologist grading = ", nrow(pathologist_grading_set_wsis)))
+message(paste0("WSIs used for feature tuning n = ", nrow(feature_tuning_set_mucosa)))
 ```
 
