@@ -14,7 +14,7 @@ The model "mucosa" in the fragment quality suite (fe_si_models/fragment_quality_
 classifies mucosal segments based on if they contain small intestinal mucosa, and
 quality of the mucosa (orientation and percentage artefact).
 
-The performance metrics for each class compared to the majoiryt opinion of three pathologists 
+The performance metrics for each class compared to the majority opinion of three pathologists 
 are calculated in fe_si_models/fragment_quality_suite/mucosa/scripts/validate_mucosa)
 
 This chunk is to calculate the performance specifically for the purpose of how it is used in this paper,
@@ -61,14 +61,11 @@ summary_df <- template %>%
     f1 = 2 * ppv * sensitivity / (ppv + sensitivity)
   )
 
-write_xlsx(template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/performance_mucosa/performance_template_mucosa.xlsx")
+write_xlsx(template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_template_mucosa.xlsx")
 
-write_json(summary_df, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/performance_mucosa/performance_mucosa.json", pretty = TRUE)
+write_json(summary_df, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_mucosa.json", pretty = TRUE)
 
 print(summary_df)
 ```
         
         
-      
-```{r}
-```

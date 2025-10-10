@@ -7,9 +7,18 @@ dissertation)
 
 ## Folders
 - **scripts**: Contains all scripts in pipeline
-  - **agreement**: Parses pathologists grades and calculates mode and agreement
-  - **ai_vs_path**: Calculate correlations between pathologists mode grade and 
+  - **lymphocyte_distribution_features**: Computes features by mucosal segment
+	- **flow_of_cases**: Details inclusion/exclusion (basis for fig 2)
+	- **grading_sample**: Details sampling of "pathologist_grading_set"
+	- **export_mucosa_tiff**: Exports sampled segments for "pathologist-grading-set"
+  as downsampled tiff for grading
+  - **agreement.Rmd**: Parses pathologists grades and calculates mode and agreement
+  - **ai_vs_path.Rmd**: Calculate correlations between pathologists mode grade and 
   ai-derived features
+  - **performance_mucosa**: Compared automatic mucosa qc to majority grade of pathologist
+  
+  - **coauthor_order.Rmd** randomization of authors with equal contribution
+  - **fig_1_schematic.Rmd** For example plots fig 1 (mock data)
 - **input**: Contains input files for scripts that are not from other folders
 in <judits_work_keller_lab> (mostly manually reviewed templates and what not)
 - **output**: Contains outputs from each script (arranged by script name)
@@ -17,7 +26,32 @@ in <judits_work_keller_lab> (mostly manually reviewed templates and what not)
 - **communication**: Contain mail threads of people to acknowledge
 - **historic_versions**: Contains previous versions of this project (early draft pipeline)
 
+## Move to historic/delete?
+Scripts: compute_lymphocyte_features
+included_mucosa - BUT MAYBE USED FOR GRADING SAMPLE
+import_included_mucosa.groovy
+import_mucosa
+import_sampled_mucosa
+troubleshoot
+
+## Circle back to: 
+parse_ai_features
+parse_lymphocyte_features
+explore_biopsy_clustering
+explore unscaled
+lymph_dist_macbook / lymphocyte_distribution_features
+prepare_for_clustering_draft
+
 ## Study Overview
+1. Detect tissue (vs background) fe_si_models/fragment_quality_suite/tissue
+2. Separate fragments (includes manual review step for applying exclusion criteria
+on fragment-level) fe_si_models/fragment_quality_suite/fragments
+
+The different steps and models applied are outlined in fe_si_models with
+the steps to identify tissue, fragments and mucosal segments organized in different
+subfolder under "fragment_quality_suite" and the dl models organized under 
+"histology_component_suite". The DL models were chained within aforia and retreived 
+with scripts in fe_si_platforms/aiforia
 
 ## Case Material
 ![Schematic](assets/case_material.png)
@@ -37,6 +71,9 @@ All sample information and scanning site etc is compiled in <fe_si_images/output
 (Includes all WSIs considered)
 
 ## Data partitioning
+- Model development set (training/tuning slides from fe_si_papers/ai_quantification_lymphocytes_fe_si_bx)
+- Pathologist-grading set (detailed in scripts/grading_sample)
+- Feature tuning set: 
 
 ## Deep learning-based histology analysis
 

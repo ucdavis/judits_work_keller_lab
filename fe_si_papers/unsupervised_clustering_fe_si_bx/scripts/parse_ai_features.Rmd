@@ -240,6 +240,20 @@ write_json(parsed_features$unscaled, paste0(parse_ai_features_dir, "unscaled_", 
 write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"), pretty =TRUE)
 ```
 
+### Pull Batch 0 - new truncated
+Just to extract the global size feature for path vs ai comparisom
+```{r}
+subset_name <- "batch_0"
+
+subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_batch_0.json")
+
+feature_summaries <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all_1_2830.json") %>%
+  filter(image_name %in% subset$image_name) 
+
+write_json(feature_summaries, paste0(parse_ai_features_dir, "feature_summaries_unprocessed_grading_sample.json"))
+
+```
+
 ### Parse batch 1
 ```{r}
 subset_name <- "batch_1"
@@ -254,25 +268,7 @@ write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subs
 ```
 
 
-
-### Pull Batch 0 - new truncated
-Just to extract the global size feature for path vs ai comparisom
-```{r}
-subset_name <- "batch_0"
-
-subset <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/process_subset/subset_batch_0.json")
-
-feature_summaries <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all_1_2830.json") %>%
-  filter(image_name %in% subset$image_name) 
-
-write_json(feature_summaries, paste0(parse_ai_features_dir, "feature_summaries_unprocessed_grading_sample.json"))
-
-
-
-```
-
-
-### Analyze all
+### Parse batch 2-6
 ```{r}
 subset_name <- "full"
 

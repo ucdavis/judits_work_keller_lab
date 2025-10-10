@@ -13,15 +13,18 @@ knitr::opts_chunk$set(echo = TRUE)
 New version of lymphocyte feature extraction that is faster (does not calculate clusters)
 and more stable (allows multiple tries of reading in files)
 
-```{r}
+## Issues / Deviations / Comments
+The first 658 mucosal segments were initially processed with a previous (slow) version that also generated lymphocyte clusters (commented out here). 
+This step was skipped in this iteration (since the resulting feature was dropped after feature exploration). The processed segments were not reprocessed, just filtered to match the others. 
+```{r, libraries, directories and functions}
 library(tidyverse)
 library(jsonlite)
 library(sf)
 library(nngeo)
 Sys.setenv(OGR_GEOJSON_MAX_OBJ_SIZE = 0) #problem opening large file w/o this
 
-#to_box <- "~/Library/CloudStorage/Box-Box/"
-to_box <- "C:/Users/15303/Box/"
+to_box <- "~/Library/CloudStorage/Box-Box/"
+#to_box <- "C:/Users/15303/Box/"
 
 read_sf_retry <- function(path, retries = 3, wait = 5) {
   attempt <- 1
@@ -477,7 +480,7 @@ add_blank_lymphocyte_summary <- function(mapped_to_mucosa,
 }
 ```
 
-#Reformat mucosa list run with old script to new format
+# Reformat mucosa list run with old script to new format
 ```{r}
 features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/")
 

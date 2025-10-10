@@ -12,11 +12,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Objective
 This is to compute the distance to closest neighbor and distance to closest junction for each lymphocyte in included mucosa fragments. 
 
-The analysis will be done per tissue fragment (after automatic filtering of inaadequate orientation
-and artefact)
+The analysis will be done per tissue fragment (after automatic filtering of inadequate orientation and artefact)
 
 ## Input
-- included_mucosa.json 
+- included_mucosa.json (fe_si_models/fragment_quality_suite/mucosa)
 - <image>_<fragment>_<mucosa>_<model_version>_mapped_to_mucosa_lymphocytes.geojson (fe_si_models/merge_model_output/map_to_mucosa/output/map_to_mucosa)
 Contains lymphocyte outline coordinates (mapped by compartment and layer)
 - <image>_<fragment>_<mucosa>_<model_version>_mapped_to_mucosa.geojson (fe_si_models/merge_model_output/map_to_mucosa/output/map_to_mucosa)
@@ -26,7 +25,7 @@ Contains layers, tissue compartments and lymphocyte outline coordinates (grouped
 This has a step to remove duplicate lymphocyte outputs based on a threshold for centroid distance
 
 ### Issues/Deviations
-- Major issue when running full batch - way too many are giving NA / O values for lymphocytes - suspect because I made change to "mucosa_list" while running but not sure
+
 ```{r}
 library(tidyverse)
 library(jsonlite)
@@ -34,8 +33,8 @@ library(sf)
 library(nngeo)
 Sys.setenv(OGR_GEOJSON_MAX_OBJ_SIZE = 0) #problem opening large file w/o this
 
-#to_box <- "~/Library/CloudStorage/Box-Box/"
-to_box <- "C:/Users/15303/Box/"
+to_box <- "~/Library/CloudStorage/Box-Box/"
+#to_box <- "C:/Users/15303/Box/"
 
 
 #Calculates the distance to closest neighbor, and the distance to the villi/crypts junction

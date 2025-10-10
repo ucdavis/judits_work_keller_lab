@@ -9,16 +9,15 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+downstreams from lymphocyte_distribution_features
 
-
-```{r}
-# ── packages ──────────────────────────────────────────────────────────
-library(dplyr)        # data wrangling
-library(ggplot2)      # quick checks / k-dist plot
-library(cluster)      # clusGap()
-library(factoextra)   # fviz_* helpers
-library(dbscan)       # DBSCAN
-library(mclust)       # model-based clustering
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)       
+library(ggplot2)      
+library(cluster)      
+library(factoextra)  
+library(dbscan)       
+library(mclust)       
 
 lymphocyte_features <-  fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/lymphocyte_feature_summaries_labl_2020_tuning_included_fragments_new.json")
 

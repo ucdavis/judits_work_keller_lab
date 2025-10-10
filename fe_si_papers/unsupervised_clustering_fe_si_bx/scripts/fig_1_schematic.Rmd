@@ -1,5 +1,5 @@
 ---
-title: "fig_3-1_diagram"
+title: "fig_1_diagram"
 author: "Wulcan"
 date: "2025-08-10"
 output: html_document
@@ -9,6 +9,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+## Objective
+Mock data for figure 1 diagram (study overview)
 ```{r}
 library(ggplot2)
 
@@ -33,7 +35,7 @@ ggplot(df_loadings, aes(x = PC1, y = PC2, label = Variable)) +
   theme_bw(base_size = 5)
 
 # To save at 1.1 × 3.5 inches
-ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/paper/figure/pca_loading_mock.png", width = 1.4, height = 1.4, units = "in", dpi = 300)
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//paper/figure/pca_loading_mock.png", width = 1.4, height = 1.4, units = "in", dpi = 300)
 
 
 library(ggplot2)
@@ -70,6 +72,7 @@ p <- ggplot(df, aes(x, y, color = cluster)) +
 p
 
 # Save exactly 3.5 x 1.1 inches
-ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/paper/figure/kmeans_mock_plot.png", p, width = 3.5, height = 1.4, units = "in", dpi = 300)
+#n
+#ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/paper/figure/kmeans_mock_plot.png", p, width = 3.5, height = 1.4, units = "in", dpi = 300)
 
 ```

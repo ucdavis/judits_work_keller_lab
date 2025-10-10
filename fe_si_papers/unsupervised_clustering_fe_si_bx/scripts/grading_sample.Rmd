@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Objective
-This is to calculate the sample size for comparing lymphocyte distribution grades (by pathologists) with AI-derived lymphocyte distribution features. 
+This is to calculate the sample size for the "pathologist_grading_set" - intended for comparing lymphocyte distribution grades (by pathologists) with AI-derived lymphocyte distribution features. 
 
 Data on percentages, and ANOVA effect size for pathologists grade (majority opinion) vs normalized lymphocyte count (per wsi) from the paper "AI-based quantification of lymphocytes in feline small intestine" (Wulcan et al 2024, https://doi.org/10.1177/0300985824128682) is used for estimating prevalence of different grades and effect size. This should be conservative, since the intended analysis will have a higher spatial granularity.
 
@@ -23,7 +23,7 @@ With just one categorical variable (but four levels), a one-way many groups anov
 I do not expect the distance to nearest neighbor values to be normally distributed.
 As a rough rule of thumb, if the groups are 2-9 the sample size for each group should be at least 15. 
 The effect size for an AN
-To calculat number of observations per group, this requires number of groups (k, 4),  effect size (Cohens f), signigicance level and power.
+To calculate number of observations per group, this requires number of groups (k, 4),  effect size (Cohens f), signigicance level and power.
 
 
 ## Calculate effect size based on "AI-based quantificiation of lymphocytes paper"
