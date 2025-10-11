@@ -393,6 +393,8 @@ message(paste0("Included mucosa, WSIs n = ", length(unique(included_mucosa$image
 message(paste0("Included mucosa, fragments n = ", length(unique(included_mucosa$image_fragment))))
 message(paste0("Included mucosa, mucosal segments n = ", nrow(included_mucosa)))
 
+write_json(included_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
 ```
 
 #### Processing batches and data partitioning
