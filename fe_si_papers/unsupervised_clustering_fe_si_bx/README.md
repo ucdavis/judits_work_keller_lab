@@ -7,15 +7,20 @@ dissertation)
 
 ## Folders
 - **scripts**: Contains all scripts in pipeline
-  - **lymphocyte_distribution_features**: Computes features by mucosal segment
-	- **flow_of_cases**: Details inclusion/exclusion (basis for fig 2)
-	- **grading_sample**: Details sampling of "pathologist_grading_set"
-	- **export_mucosa_tiff**: Exports sampled segments for "pathologist-grading-set"
+  - **grading_sample**: Details sampling of "pathologist_grading_set"
+  - **export_mucosa_tiff**: Exports sampled segments for "pathologist-grading-set"
   as downsampled tiff for grading
   - **agreement.Rmd**: Parses pathologists grades and calculates mode and agreement
   - **ai_vs_path.Rmd**: Calculate correlations between pathologists mode grade and 
   ai-derived features
   - **performance_mucosa**: Compared automatic mucosa qc to majority grade of pathologist
+  - **flow_of_cases**: Details inclusion/exclusion (basis for fig 2)
+  - **lymphocyte_distribution_features**: Computes features by mucosal segment
+  - **parse_ai_features**: Parses and scales features
+  - **explore unscaled**: Explores feature correlation and filters improbable 
+  values -REDO for new all
+	
+	
   
   - **coauthor_order.Rmd** randomization of authors with equal contribution
   - **fig_1_schematic.Rmd** For example plots fig 1 (mock data)
@@ -26,23 +31,12 @@ in <judits_work_keller_lab> (mostly manually reviewed templates and what not)
 - **communication**: Contain mail threads of people to acknowledge
 - **historic_versions**: Contains previous versions of this project (early draft pipeline)
 
-## Move to historic/delete?
-Scripts: compute_lymphocyte_features
-included_mucosa - BUT MAYBE USED FOR GRADING SAMPLE
-import_included_mucosa.groovy
-import_mucosa
-import_sampled_mucosa
-troubleshoot
 
-## Circle back to: 
-parse_ai_features
-parse_lymphocyte_features
-explore_biopsy_clustering
-explore unscaled
-lymph_dist_macbook / lymphocyte_distribution_features
-prepare_for_clustering_draft
 
-## Study Overview
+
+prepare_for_clustering_draft - THIS IS PROBABLY THE REAL CLUSTERING SCRIPT
+
+# Study Overview
 1. Detect tissue (vs background) fe_si_models/fragment_quality_suite/tissue
 2. Separate fragments (includes manual review step for applying exclusion criteria
 on fragment-level) fe_si_models/fragment_quality_suite/fragments

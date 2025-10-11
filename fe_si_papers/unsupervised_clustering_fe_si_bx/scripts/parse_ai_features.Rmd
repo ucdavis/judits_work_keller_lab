@@ -19,9 +19,9 @@ library(tidyverse)
 
 to_box <- "~/Library/CloudStorage/Box-Box/"
 
-feature_summary_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/feature_summaries/")
+feature_summary_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/lymphocyte_distribution_features/")
 
-parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/parse_ai_features/")
+parse_ai_features_dir <- paste0(to_box, "judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_ai_features/")
 
 parse_feature_summaries_new <- function(feature_summary) {
   
@@ -272,7 +272,24 @@ write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subs
 ```{r}
 subset_name <- "full"
 
-feature_summaries <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/lymphocyte_distribution_patterns_in_feline_small_intestinal_biopsies/output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all.json") 
+feature_summaries <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all.json") 
+
+parsed_features <- parse_feature_summaries_new(feature_summaries)
+unscaled <- parsed_features$unscaled
+scaled <- parsed_features$scaled
+
+write_json(parsed_features$unscaled, paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json"), pretty =TRUE)
+
+write_json(parsed_features$scaled, paste0(parse_ai_features_dir, "scaled_", subset_name, ".json"), pretty =TRUE)
+
+```
+
+### Parse everything
+Moved all versions before this to subfolder "previous_versions"
+```{r}
+subset_name <- "all"
+
+feature_summaries <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/lymphocyte_distribution_features/lymphocyte_feature_summaries_all.json") 
 
 parsed_features <- parse_feature_summaries_new(feature_summaries)
 unscaled <- parsed_features$unscaled
