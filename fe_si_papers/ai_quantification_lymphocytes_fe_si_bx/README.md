@@ -7,7 +7,7 @@ https://journals.sagepub.com/doi/full/10.1177/03009858241286828
 ### Related drive folder:
 - **fp_assessment_in_test_rois_with_worst_ppv**: This contains 
 spreadsheet and pptx examples of manually reviewed fp.
-[fp_assessment_in_test_rois_with_worst_ppv] (/https://drive.google.com/drive/folders/17JEsnuhif6RgRp7Rrqp1vsYXOOWQgfkt?usp=sharing) 
+/https://drive.google.com/drive/folders/17JEsnuhif6RgRp7Rrqp1vsYXOOWQgfkt?usp=sharing
  
 
 
