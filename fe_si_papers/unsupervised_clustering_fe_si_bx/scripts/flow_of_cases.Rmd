@@ -475,4 +475,51 @@ message(paste0("WSIs used for model testing, n = ", nrow(model_test_set)))
 message(paste0("WSIs used for pathologist grading = ", nrow(pathologist_grading_set_wsis)))
 message(paste0("WSIs used for feature tuning n = ", nrow(feature_tuning_set_mucosa)))
 ```
+### Pilot clinical data extraction
 
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(writexl)
+set.seed(321)
+
+included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
+unique_image_name <- unique(included_mucosa$image_name)
+
+image_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(image_name %in% unique_image_name)
+
+image_info_pmi <- image_info %>% filter(in_vmacs)
+image_info_labl <- image_info %>% filter(in_labl & !in_vmacs)
+
+pilot_pmi <- image_info_pmi %>%
+  slice_sample(n=75) %>%
+  select(bx_id, bx_slide, vmacs_patient_id, vmacs_visit_id, vmacs_breed:vmacs_addendum, labl_breed, labl_diagnosis, labl_comment,  labl_clonality_trg1, labl_clonality_trg2) %>%
+  mutate(si_section = "",
+         dx = "",
+         enteritis_grade = "",
+         lymphoma_type = "",
+         lymphoma_size = "",
+         ihc = "",
+         clonality = "",
+         bx_reason = ""
+         )
+
+pilot_labl <- image_info_labl %>%
+  slice_sample(n=75) %>%
+  select(bx_id, bx_slide, labl_breed, labl_case, labl_diagnosis, labl_sex, labl_dob_age, labl_history, labl_comment,  labl_clonality_trg1, labl_clonality_trg2) %>%
+  mutate(si_section = "",
+         dx = "",
+         enteritis_grade = "",
+         lymphoma_type = "",
+         lymphoma_size = "",
+         ihc = "",
+         clonality = "",
+         bx_reason = ""
+         )
+
+write_xlsx(pilot_pmi, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/pmi_pilot_data_extract_75.xlsx")
+
+write_xlsx(pilot_labl, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/labl_pilot_data_extract_75.xlsx")
+```
