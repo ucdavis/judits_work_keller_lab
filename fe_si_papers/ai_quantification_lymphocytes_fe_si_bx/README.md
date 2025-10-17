@@ -7,6 +7,22 @@ https://journals.sagepub.com/doi/full/10.1177/03009858241286828
 WSIs, annotations and intermediate and output files are in bioimage archive (BIA):
 <https://www.ebi.ac.uk/biostudies/bioimages/studies/S-BIAD1129?query=S-BIAD1129>
 
+## samples
+This paper use cases sampled with <fe_si_samples/labl_2020>
+<https://github.com/ucdavis/fe_si_samples/tree/7cb003f5a76cce2259aa95f39e07b501edbfeb17/labl_2020>
+
+## images
+Images are tracked (along with all other images) in <fe_si_images>
+<https://github.com/ucdavis/fe_si_images/tree/477214171431797a9a3795dc1a869a368b83e127>
+
+## models
+This paper uses versions of <fe_si_models/histology_component_suite/lymphocytes>
+<https://github.com/ucdavis/fe_si_models/tree/ed8c6bd018b4bfc00267169de9ad62d1f83b290b/histology_component_suite/lymphocytes>
+version: <fe_si_cells_pv3> (old name lc_1_5000_v11)
+and <fe_si_models/histology_component_suite/compartments>:
+<https://github.com/ucdavis/fe_si_models/tree/ed8c6bd018b4bfc00267169de9ad62d1f83b290b/histology_component_suite/compartments>
+version: <fe_si_compartments_pv1> old name <Tissue 9>
+
 ## subfolders
 - **AIFeBx_supplemental**: Shared as supplemental to the paper - the shared github repo is 
 identical to this but no longer linked: can be found here: <https://github.com/ucdavis/judits_work_keller_lab/tree/main/fe_si_papers/ai_quantification_lymphocytes_fe_si_bx>
