@@ -1,0 +1,7 @@
+human_review/*
+records/*
+tuning_set/*
+bedrock/*
+pilot/*
+paper/*
+.DS_Store
