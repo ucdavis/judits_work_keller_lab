@@ -3,18 +3,16 @@
 	url = https://github.com/ucdavis/fe_si_models/
 [submodule "fe_si_platforms"]
 	path = fe_si_platforms
-	url = https://github.com/ucdavis/fe_si_platforms
+	url = https://github.com/ucdavis/fe_si_platforms/
 [submodule "fe_si_samples"]
 	path = fe_si_samples
-	url = https://github.com/ucdavis/fe_si_samples
+	url = https://github.com/ucdavis/fe_si_samples/
 [submodule "svm_archives"]
 	path = svm_archives
-	url = https://github.com/ucdavis/svm_archives
-
+	url = https://github.com/ucdavis/svm_archives/
 [submodule "fe_si_images"]
 	path = fe_si_images
-	url = https://github.com/ucdavis/fe_si_images
-
+	url = https://github.com/ucdavis/fe_si_images/
 [submodule "samples_size"]
 	path = samples_size
-	url = https://github.com/ucdavis/samples_size
+	url = https://github.com/ucdavis/samples_size/
