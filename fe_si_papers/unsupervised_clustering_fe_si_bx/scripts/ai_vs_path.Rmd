@@ -913,7 +913,7 @@ correlation_for_paper <- residuals_and_correlations %>%
 ```{r}
 corr <- fromJSON(paste0(output_dir, "correlation.json"))
 
-cor_avg <- correlation %>%
+cor_avg <- corr %>%
   group_by(ai_feature, path_feature) %>%
   summarise(
     mean_rho = mean(spearman_rho, na.rm = TRUE),
@@ -1010,8 +1010,8 @@ ggplot(cor_avg, aes(x = `Quantitative feature`, y = `Pathologist grade`, fill = 
   ) +
   scale_y_discrete(limits = rev) +  # optional: flip y order to look like a table
   labs(
-    x = "Quantitative Feature",
-    y = "Pathologist Grade"
+    x = "AI-Derived Feature",
+    y = "Pathologist-Graded Feature"
   ) +
   theme_bw(base_size = 9, base_family = "Arial") +
   theme(
