@@ -238,14 +238,14 @@ path <- bind_rows(long_1, long_2) %>%
                              TRUE ~ feature
                              ))
 
-write_json(path, paste0(output_dir, "parsed_path.json"), pretty = TRUE)
+#write_json(path, paste0(output_dir, "parsed_path.json"), pretty = TRUE)
 
 
 
-ai  <- fromJSON(paste0(parse_ai_features_dir, "unscaled_", subset_name, ".json")) %>%
+ai  <- fromJSON(paste0(parse_ai_features_dir, "previous_versions/unscaled_", subset_name, ".json")) %>%
   rename(ai_value = value) 
 
-global_size <- fromJSON(paste0(parse_ai_features_dir, "feature_summaries_unprocessed_grading_sample.json")) %>%
+global_size <- fromJSON(paste0(parse_ai_features_dir, "previous_versions/feature_summaries_unprocessed_grading_sample.json")) %>%
   mutate(image_fragment_mucosa_name = paste(image_name, fragment_name, mucosa_name, sep = "_")) %>%
   select(image_fragment_mucosa_name, mean_lymphocytes_measured_area_um2, sd_lymphocytes_measured_area_um2) %>%
   pivot_longer(cols =  c("mean_lymphocytes_measured_area_um2", "sd_lymphocytes_measured_area_um2"),
@@ -838,6 +838,8 @@ for (name in names(morph_comparisons)) {
 
 correlation <- bind_rows(compartment_correlations, lp_correlations, epi_correlations, morph_correlations)
 
+write_json(correlation, paste0(output_dir, "correlation.json"), pretty = TRUE)
+
 residuals_and_correlations <- bind_rows(compartment_residuals, lp_residuals, epi_residuals, morph_residuals) %>%
   left_join(correlation)
 
@@ -903,4 +905,127 @@ correlation_for_paper <- residuals_and_correlations %>%
 #write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
 
 #write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
+```
+
+
+### Correlation plot
+
+```{r}
+corr <- fromJSON(paste0(output_dir, "correlation.json"))
+
+cor_avg <- correlation %>%
+  group_by(ai_feature, path_feature) %>%
+  summarise(
+    mean_rho = mean(spearman_rho, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate("Pathologist grade" = case_when(path_feature == "Clustering" ~ "Intraepithelial clustering",
+                                         path_feature == "Patchy infiltration" ~ "Lamina propria patchy distribution",
+                                         TRUE ~ path_feature),
+         "Quantitative feature" = case_when(ai_feature == "% in clusters" ~ "% in Clust",
+                                            ai_feature == "Epithelium-Lamina propria ratio"~ "Epi:LP",
+                                            ai_feature == "Junctional distance (median)"~ "Junct Dist",
+                                            ai_feature == "Lymphocyte distance (mean)"~ "Mean Dist",
+                                            ai_feature == "Lymphocyte distance (sd)"~ "SD Dist",
+                                            ai_feature == "Mean size (global)"~ "Mean Size",
+                                            ai_feature == "SD size (global)"~ "SD Size",
+                                            TRUE ~ ai_feature)
+         )
+
+cor_avg <- cor_avg %>%
+  mutate(
+    rho_cat = case_when(
+      mean_rho >=  0.50              ~ "strong_pos",
+      mean_rho >=  0.30              ~ "moderate_pos",
+      mean_rho >=  0.10              ~ "weak_pos",
+      mean_rho >  -0.10 & mean_rho < 0.10 ~ "near_zero",
+      mean_rho <= -0.50              ~ "strong_neg",
+      mean_rho <= -0.30              ~ "moderate_neg",
+      mean_rho <= -0.10              ~ "weak_neg",
+      TRUE                           ~ NA_character_
+    ),
+    rho_cat = factor(
+      rho_cat,
+      levels = c(
+        "strong_neg", "moderate_neg", "weak_neg",
+        "near_zero",
+        "weak_pos", "moderate_pos", "strong_pos"
+      )
+    )
+  )
+
+
+
+cor_avg$`Pathologist grade` <- factor(
+  cor_avg$`Pathologist grade`,
+  levels = c(
+    "Cellularity",
+    "Intraepithelial clustering",
+    "Lamina propria patchy distribution",
+    "Junctional gradient",
+    "Size",
+    "Monomorphism"
+  )
+)
+
+cor_avg$`Quantitative feature` <- factor(
+  cor_avg$`Quantitative feature`,
+  levels = c(
+    "Count",
+    "Mean Dist",
+    "SD Dist",
+    "Epi:LP",
+    "% in Clust",
+    "Junct Dist",
+    "Mean Size",
+    "SD Size"
+  )
+)
+
+ggplot(cor_avg, aes(x = `Quantitative feature`, y = `Pathologist grade`, fill = rho_cat)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  # optional: show the numeric mean_rho inside each tile
+  geom_text(aes(label = sprintf("%.2f", mean_rho)), size = 3) +
+  scale_fill_manual(
+    name = "Spearman ρ",
+    values = c(
+      strong_neg   = "darkorange3",   # dark orange
+      moderate_neg = "orange2",       # mid orange
+      weak_neg     = "moccasin",      # light orange
+      near_zero    = "grey80",        # grey
+      weak_pos     = "lightblue",     # light blue
+      moderate_pos = "deepskyblue3",  # mid blue
+      strong_pos   = "navy"           # dark blue
+    ),
+    drop = FALSE,
+    labels = c(
+      strong_neg   = "≤ -0.50",
+      moderate_neg = "-0.49 to -0.30",
+      weak_neg     = "-0.29 to -0.10",
+      near_zero    = "-0.09 to 0.09",
+      weak_pos     = "0.10 to 0.29",
+      moderate_pos = "0.30 to 0.49",
+      strong_pos   = "≥ 0.50"
+    )
+  ) +
+  scale_y_discrete(limits = rev) +  # optional: flip y order to look like a table
+  labs(
+    x = "Quantitative Feature",
+    y = "Pathologist Grade"
+  ) +
+  theme_bw(base_size = 9, base_family = "Arial") +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    panel.grid   = element_blank(),
+    legend.position = "right"
+  )
+
+ggsave(
+  filename = paste0(output_dir, "correlation_heatmap.png"),
+  plot = last_plot(),    # or replace with your plot object, e.g. p
+  width = 7,
+  height = 2.5,
+  units = "in",
+  dpi = 300
+)
 ```

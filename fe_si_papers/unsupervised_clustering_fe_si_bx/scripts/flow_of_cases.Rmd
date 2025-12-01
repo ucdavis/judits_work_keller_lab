@@ -38,6 +38,8 @@ The status will be tracked here: https://docs.google.com/spreadsheets/d/1EfFLsC8
 ```{r, message=FALSE, warning=FALSE}
 library(jsonlite)
 library(tidyverse)
+library(writexl)
+library(readxl)
 ```
 
 ## Summary for paper - case flow chart
@@ -316,6 +318,11 @@ excluded_fragments <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_kelle
   distinct() %>%
   mutate(exclusion_reason = case_when(exclusion_reason == "stomach" ~ "no_si",
                                       exclusion_reason == "quality focus" ~ "quality",
+                                      exclusion_reason == "pancreas" ~ "no_si",
+                                      exclusion_reason == "fat" ~ "no_si",
+                                      exclusion_reason == "glass" ~ "no_si",
+                                      exclusion_reason == "lnn" ~ "no_si",
+                                      exclusion_reason == "MALT" ~ "malt",
                                       TRUE ~ exclusion_reason))
 
 duplicates <- excluded_fragments %>% filter(exclusion_reason == "duplicate_fragment")
@@ -330,6 +337,8 @@ message(paste0("No small intestine n = ", nrow(no_si)))
 message(paste0("Poor quality n = ", nrow(quality)))
 message(paste0("Lesion n = ", nrow(lesion)))
 message(paste0("MALT n = ", nrow(malt)))
+
+write_json(excluded_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_fragments.json", pretty = TRUE)
 ```
 ### Included fragments 
 ```{r, warning=FALSE}
@@ -348,7 +357,42 @@ message(paste0("Included fragments, patients n = ", length(unique_local_pt) + le
 message(paste0("Included fragments, WSIs n = ", length(unique(included_fragments$image_name))))
 message(paste0("Included fragments, fragments n = ", nrow(included_fragments)))
 
+write_json(included_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_fragments.json", pretty = TRUE)
+
 ```
+
+### Excluded wsis after manual review
+```{r}
+excluded_fragments <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_fragments.json")
+
+included_fragments <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_fragments.json")
+
+excluded_wsis_manual_fragment_review <- excluded_fragments %>%
+  # keep only image_names not present in included_fragments
+  filter(!image_name %in% included_fragments$image_name) %>%
+  # group by image_name to collapse exclusion reasons
+  group_by(image_name) %>%
+  summarise(
+    exclusion_reason = str_c(unique(na.omit(exclusion_reason)), collapse = "__"),
+    .groups = "drop"
+  ) %>%
+  mutate(exclusion_reason = case_when(exclusion_reason == "lesion__no_si" ~ "lesion",
+                                      exclusion_reason == "duplicate_fragment__no_si" ~ "no_si",
+                                      exclusion_reason == "duplicate_fragment__lesion__quality" ~ "lesion__quality",
+                                      exclusion_reason == "no_si__duplicate_fragment" ~ "no_si",
+                                      exclusion_reason == "duplicate_fragment__no_si__malt" ~ "malt",
+                                      exclusion_reason == "duplicate_fragment__quality__malt" ~ "quality__malt",
+                                      exclusion_reason == "malt__duplicate_fragment" ~ "malt",
+                                      exclusion_reason == "malt__no_si" ~ "malt",
+                                      exclusion_reason == "no_si__duplicate_fragment__malt" ~ "malt",
+                                      TRUE ~ exclusion_reason
+                                      
+         ))
+
+write_json(excluded_wsis_manual_fragment_review, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_manual_fragment_review.json", pretty = TRUE)
+
+```
+
 
 ### Processed mucosa
 
@@ -366,9 +410,12 @@ too_small <- mucosa %>% filter(classification == "too_small")
 no_mucosa <- mucosa %>% filter(classification == "no_mucosa")
 poor_quality <- mucosa %>% filter(orientation_class == "inadequate" | artefact_class == "inadequate")
 
+improbable_outliers <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/explore_unscaled/improbabilities_all.json")
+
 message(paste0("Too small, mucosal segments n = ", nrow(too_small)))
 message(paste0("No mucosa, mucosal segments n = ", nrow(no_mucosa)))
 message(paste0("Poor quality, mucosal segments n = ", nrow(poor_quality))) # see deviations
+message(paste0("Improbable outliers n = ", nrow(improbable_outliers)))
 ```
 
 
@@ -378,11 +425,23 @@ message(paste0("Poor quality, mucosal segments n = ", nrow(poor_quality))) # see
 
 patient_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>% select(image_name, bx_id, in_labl, vmacs_patient_id)
 
+
+
 included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_all_with_additional.json") %>%
   distinct()  %>%
   left_join(patient_info) %>%
   filter((artefact_class == "adequate" | artefact_class == "marginal")
          & (orientation_class == "adequate" | orientation_class == "marginal"))
+
+write_json(included_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
+#remove mucosal segments excluded at late stage for improbale feature values
+improbable_outliers <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/explore_unscaled/improbabilities_all.json")
+
+included_mucosa <- included_mucosa %>%
+  filter(!name%in% improbable_outliers$image_fragment_mucosa_name) 
+
+
 
 unique_local_pt <- unique(included_mucosa$vmacs_patient_id)
 outside_cases <- included_mucosa %>% filter(in_labl & is.na(vmacs_patient_id)) 
@@ -393,7 +452,43 @@ message(paste0("Included mucosa, WSIs n = ", length(unique(included_mucosa$image
 message(paste0("Included mucosa, fragments n = ", length(unique(included_mucosa$image_fragment))))
 message(paste0("Included mucosa, mucosal segments n = ", nrow(included_mucosa)))
 
-write_json(included_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
+```
+
+### Excluded automated mucosa
+```{r}
+processed_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_all_with_additional.json") %>%
+  distinct() 
+
+included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
+excluded_wsis_automated_mucosa_classification <- processed_mucosa %>%
+  # keep only image_names not present in included_fragments
+  filter(!image_name %in% included_mucosa$image_name) %>%
+  # group by image_name to collapse exclusion reasons
+  group_by(image_name) %>%
+  summarise(
+    classification = str_c(unique(na.omit(classification)), collapse = "__"),
+    .groups = "drop"
+  ) %>%
+  mutate(exclusion_reason = "quality")
+
+write_json(excluded_wsis_automated_mucosa_classification, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_automated_mucosa_classification.json", pretty = TRUE)
+```
+
+### Excluded improbale values
+Exluded in explore feature step
+```{r}
+
+
+cluster_data <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/clustering/cluster_assignments_all.json") 
+
+exluded_wsis_improbable_values <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json") %>%
+  select(image_name, bx_id) %>%
+  filter(!image_name %in% cluster_data$image_name) 
+
+
+write_json(exluded_wsis_improbable_values, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/exluded_wsis_improbable_values.json", pretty = TRUE)
 
 ```
 
@@ -475,51 +570,5 @@ message(paste0("WSIs used for model testing, n = ", nrow(model_test_set)))
 message(paste0("WSIs used for pathologist grading = ", nrow(pathologist_grading_set_wsis)))
 message(paste0("WSIs used for feature tuning n = ", nrow(feature_tuning_set_mucosa)))
 ```
-### Pilot clinical data extraction
 
-```{r}
-library(jsonlite)
-library(tidyverse)
-library(writexl)
-set.seed(321)
 
-included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
-
-unique_image_name <- unique(included_mucosa$image_name)
-
-image_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
-  filter(image_name %in% unique_image_name)
-
-image_info_pmi <- image_info %>% filter(in_vmacs)
-image_info_labl <- image_info %>% filter(in_labl & !in_vmacs)
-
-pilot_pmi <- image_info_pmi %>%
-  slice_sample(n=75) %>%
-  select(bx_id, bx_slide, vmacs_patient_id, vmacs_visit_id, vmacs_breed:vmacs_addendum, labl_breed, labl_diagnosis, labl_comment,  labl_clonality_trg1, labl_clonality_trg2) %>%
-  mutate(si_section = "",
-         dx = "",
-         enteritis_grade = "",
-         lymphoma_type = "",
-         lymphoma_size = "",
-         ihc = "",
-         clonality = "",
-         bx_reason = ""
-         )
-
-pilot_labl <- image_info_labl %>%
-  slice_sample(n=75) %>%
-  select(bx_id, bx_slide, labl_breed, labl_case, labl_diagnosis, labl_sex, labl_dob_age, labl_history, labl_comment,  labl_clonality_trg1, labl_clonality_trg2) %>%
-  mutate(si_section = "",
-         dx = "",
-         enteritis_grade = "",
-         lymphoma_type = "",
-         lymphoma_size = "",
-         ihc = "",
-         clonality = "",
-         bx_reason = ""
-         )
-
-write_xlsx(pilot_pmi, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/pmi_pilot_data_extract_75.xlsx")
-
-write_xlsx(pilot_labl, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/labl_pilot_data_extract_75.xlsx")
-```

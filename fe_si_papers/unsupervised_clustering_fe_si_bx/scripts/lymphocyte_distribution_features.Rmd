@@ -785,7 +785,7 @@ write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summarie
 write_json(error_log, paste0(features_dir, "feature_summaries/lymphocyte_feature_summary_errors_", subset_name, ".json"), pretty = TRUE)
 ```
 
-### Filter additional
+### Filter additional and add to list of all
 Processed additional images with old function (see deviation) this is to filter them to match truncated output format
 ```{r}
 new_format <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/lymphocyte_distribution_features/v2/feature_summaries/lymphocyte_feature_summaries_all.json")
@@ -801,7 +801,7 @@ lymphocyte_feature_summaries_all <- bind_rows(new_format, additional_new_format)
 write_json(lymphocyte_feature_summaries_all, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/lymphocyte_distribution_features/lymphocyte_feature_summaries_all.json", pretty = TRUE)
 ```
 
-### Process batch 1
+### Process batch 1 - OLD
 This was done before the chunks above and included in them
 ```{r}
 library(tidyverse)
@@ -892,7 +892,7 @@ write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summarie
 ```
 
 
-### Process grading_sample (batch_0)
+### Process grading_sample (batch_0) - OLD
 #### Deviations
 This was done before the chunks above and included in them
 Filtered mucosa list on size (>500) because mucosa processed before adding that requirement to script
@@ -1002,7 +1002,7 @@ write_json(lymphocyte_features_summaries, paste0(features_dir, "feature_summarie
 
 
 
-### Explored distributions of the following in labl_2020_tuning
+### Explored distributions of the following in labl_2020_tuning - OLD
 This was done prior to previous chunks as an initial exploratory distribution analysis
 -lc_measured_area_um2 - normally distributed (mean, sd)
 - lc_distance_to_closest_neighbor (left skewed - log transformation and median iqr)

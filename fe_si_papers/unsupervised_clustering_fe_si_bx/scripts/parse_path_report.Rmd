@@ -1,0 +1,2660 @@
+---
+title: "parse_path_report"
+author: "Wulcan"
+date: "2025-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective 
+This is to parse pathology report info into categories using GPT4o via Microsoft Azure API / Batch processing. 
+I use pathology reports from two different archives vmacs, and labl. These are processed with different prompts,
+and validated and tested separetly with the outputs combined to one table.
+
+## Deviations
+The python scripts used for interaction with microsoft Azure are under fe_si_platforms/azure/scripts/ but the output is under outputs in this repo (subfolders named after script and set)
+
+
+## Libraries, directories and functions
+```{r, message = FALSE, warning = FALSE}
+
+library(jsonlite)
+library(tidyverse)
+library(writexl)
+library(readxl)
+library(forcats)
+library(lubridate)
+library(eulerr) #for diagram
+library(RColorBrewer)
+library(cowplot)     # get_legend() and plot_grid()
+library(grid)        # unit()
+library(scales)
+library(glue)
+
+# Function to check if the JSON content follows the expected format
+is_correct_format <- function(content, expected_variables) {
+  # Try to parse the content as JSON
+  parsed <- tryCatch(fromJSON(content), error = function(e) NULL)
+  
+  # Check if the parsed object contains the required fields
+  if (!is.null(parsed) &&
+      all(expected_variables %in% names(parsed))) {
+    return(TRUE)
+  }
+  
+  return(FALSE)
+}
+
+#functions for extracting infp from azure batch output
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+strip_code_fences <- function(x) {
+  x <- trimws(x)
+  if (startsWith(x, "```")) {
+    # remove leading ``` or ```json and trailing ```
+    x <- sub("^```[a-zA-Z]*\\s*", "", x)
+    x <- sub("\\s*```\\s*$", "", x)
+  }
+  x
+}
+
+extract_json_object <- function(x) {
+  # robustly grab the first {...} block even if extra text remains
+  sub("(?s).*?(\\{.*\\}).*", "\\1", x, perl = TRUE)
+}
+
+extract_assistant_text <- function(ch0) {
+  cfield <- ch0$message$content
+  if (is.list(cfield)) {
+    txts <- vapply(cfield, function(p) p$text %||% "", character(1))
+    paste(txts[nzchar(txts)], collapse = "\n")
+  } else {
+    as.character(cfield %||% "")
+  }
+}
+
+#for calculating performance metrics where some values may be missing
+safe_div <- function(num, den) ifelse(den == 0, NA_real_, num / den)
+
+# Compute binary counts & metrics given a "positive class" label
+bin_metrics <- function(ref, pred, positive_label) {
+  # Drop rows where either side is NA
+  df <- tibble(ref = ref, pred = pred) %>% filter(!is.na(ref), !is.na(pred))
+
+  tp <- sum(ref == positive_label & pred == positive_label)
+  tn <- sum(ref != positive_label & pred != positive_label)
+  fp <- sum(ref != positive_label & pred == positive_label)
+  fn <- sum(ref == positive_label & pred != positive_label)
+  n  <- tp + tn + fp + fn
+
+  tibble(
+    tp = tp, tn = tn, fp = fp, fn = fn, n = n,
+    prevalence = safe_div(tp + fn, n),
+    se = safe_div(tp, tp + fn),
+    sp = safe_div(tn, tn + fp),
+    ppv = safe_div(tp, tp + fp),
+    npv = safe_div(tn, tn + fn),
+    accuracy = safe_div(tp + tn, n),
+    f1 = safe_div(2 * tp, 2 * tp + fp + fn)
+  )
+}
+
+# Given a base variable name (e.g., `si_segment`), return all class labels to evaluate.
+# Binary variables are treated as "TRUE" only.
+find_classes <- function(data, var) {
+  ref_col <- paste0(var, "_ref")
+  pred_col <- var
+  ref_vals <- data[[ref_col]]
+  pred_vals <- data[[pred_col]]
+
+  # logical/binary?
+  is_binary <- is.logical(ref_vals) || setequal(na.omit(unique(ref_vals)), c(FALSE, TRUE))
+  if (is_binary) return(c(TRUE))
+
+  # Otherwise: multi-class – collect levels from ref and pred, drop NAs
+  sort(unique(na.omit(c(as.character(ref_vals), as.character(pred_vals)))))
+}
+
+# Is variable multi-class (>2 unique non-NA values in reference)?
+is_multiclass <- function(data, var) {
+  ref_col <- paste0(var, "_ref")
+  n_distinct(na.omit(data[[ref_col]])) > 2
+}
+
+
+# recursively check all character columns
+is_utf8 <- function(x) {
+  if (is.character(x)) {
+    all(validUTF8(x))
+  } else if (is.list(x)) {
+    all(map_lgl(x, is_utf8))
+  } else TRUE
+}
+
+# small helper to coerce various date formats to Date
+coerce_to_date <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXt")) return(as.Date(x))
+  # Excel serials often sneak in as numeric
+  if (is.numeric(x)) return(as.Date(x, origin = "1899-12-30"))
+  # Character fallback; adjust format if needed
+  suppressWarnings(as.Date(x))
+}
+```
+
+## Local (VMACS) Strategy development
+### VMACS - test set
+75 vmacs pathology reports were sampled from 
+Sampled from included cases, (sample size calculation in samples_size/)
+```{r}
+
+set.seed(321)
+
+included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+
+unique_image_name <- unique(included_mucosa$image_name)
+
+image_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
+  filter(image_name %in% unique_image_name)
+
+image_info_pmi <- image_info %>% filter(in_vmacs)
+image_info_labl <- image_info %>% filter(in_labl & !in_vmacs)
+
+pilot_pmi <- image_info_pmi %>%
+  slice_sample(n=75) %>%
+  select(image_name, bx_id, bx_slide, vmacs_patient_id, vmacs_visit_id, vmacs_breed:vmacs_addendum, labl_breed, labl_diagnosis, labl_comment,  labl_clonality_trg1, labl_clonality_trg2) %>%
+  mutate(si_section = "",
+         dx = "",
+         enteritis_grade = "",
+         lymphoma_type = "",
+         lymphoma_size = "",
+         ihc = "",
+         clonality = "",
+         bx_reason = ""
+         )
+
+
+
+write_xlsx(pilot_pmi, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/pmi_pilot_data_extract_75.xlsx")
+
+
+```
+
+
+#### Separate VMACS case info and add block number to report
+```{r}
+
+image_index <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json")
+
+vmacs <- image_index %>% filter(in_vmacs) %>% 
+  mutate(bx_block = case_when(bx_slide == "T1" ~ "A",
+                           bx_slide == "T2" ~ "B",
+                           bx_slide == "T3" ~ "C",
+                           bx_slide == "T4" ~ "D",
+                           bx_slide == "T5" ~ "E" ,
+                           bx_slide == "T6" ~ "F",
+                           bx_slide == "T7" ~ "G",
+                           bx_slide == "T8" ~ "H",
+                           bx_slide == "T9" ~ "I", 
+                           bx_slide == "T10" ~ "J",
+                           bx_slide == "T11" ~ "K",
+                           bx_slide == "T12" ~ "L",
+                           bx_slide == "T1T2" ~ "AB",
+                           bx_slide == "T3T4" ~ "CD",
+                           bx_slide == "T5T6" ~ "EF",
+                           bx_slide == "T7T8" ~ "GH",
+                           TRUE ~ NA)) %>%
+  select(image_name, bx_id, bx_slide, bx_block, vmacs_dx, vmacs_clinical_abstract, vmacs_gross, vmacs_description, vmacs_comment, vmacs_addendum, vmacs_ancillary_tests) 
+
+write_json(vmacs, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/vmacs_bx_all.json", pretty = TRUE)
+```
+
+#### Pull tuning set
+Sample 5 bx that are not in pilot_pmi for tuning (prompt engineering)
+```{r}
+set.seed(333)
+
+pilot_pmi <- read_xlsx ("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report//pmi_pilot_data_extract_75.xlsx") 
+
+tuning <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/vmacs_bx_all.json") %>%
+  filter(!bx_id %in% pilot_pmi$bx_id) %>%
+  slice_sample(n=5) 
+
+write_json(tuning, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json", pretty = TRUE)
+
+
+```
+
+
+### Prompt engineering and model selection - vmacs_gross
+Design an initial prompt (ChatGPT 5 assisted via ChatGPT teams) and save to input/parse_path_reports/
+Check result and compare output for different models with fe_si_platforms/azure_open_ai/scripts/compare_models.py
+(Save modified copy in fe_si_papers/scripts/compare_models_llm_gross_tuning.py for documentation)
+For this tuning set GPT4o and GPT4o mini provides identical responses. GPT4o mini is much cheaper and can be used for parsing this field.
+```{r}
+tuning <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json")
+
+tuning_gross <- tuning %>% select(image_name, bx_id, bx_slide, bx_block, vmacs_gross)
+
+#write_json(tuning_gross, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_gross.json", pretty = TRUE)
+
+#write the whole thing
+
+
+```
+
+### Run the gross parsing on the test set via azures batch processing
+1. Print the test set for the gross parsing as json here (chunk below)
+2. Then parse that to jsonl format for batch processing with gpt4o-mini with the script parse_batch_input_llm_gross.py (version of fe_si_platforms/azure_open_ai/parse_batch_input.py)
+3. Then upload it to batch processing on <https://ai.azure.com/resource/batchjobs/>
+4. Then download the output file and parse it here (chunk below)
+```{r}
+all_gross <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/vmacs_bx_all.json") %>%
+  select(image_name, bx_id, bx_slide, bx_block, vmacs_gross)
+
+write_json(all_gross, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_gross.json", pretty = TRUE)
+
+#filter the test cases
+pilot_pmi <- read_xlsx ("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/pmi_pilot_data_extract_75.xlsx") 
+
+test_gross <- all_gross %>% filter(image_name %in% pilot_pmi$image_name)
+
+write_json(test_gross, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/test_gross.json", pretty = TRUE)
+
+```
+
+### Parse the gross output from batch processing:
+```{r}
+
+batch_data <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/gpt_4o_mini_batch/test_gross_gpt4o_mini_batch_output_file-e2d81ed8-daa9-4d58-906b-b3580d153c51.jsonl")
+
+expected_variables <- c("image_name", "bx_id", "bx_slide", "si_segment", "bx_type")
+
+batch_output <- lapply(batch_data, function(item_json) {
+  # 1) parse the line into a list
+  item <- tryCatch(fromJSON(item_json, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (is.null(item)) {
+    return(c(parse_error = "TRUE"))
+  }
+
+  # 2) safe accessors for common fields
+  custom_id <- item$custom_id %||% NA_character_
+  ch0 <- tryCatch(item$response$body$choices[[1]], error = function(e) NULL)
+
+  finish_reason <- ch0$finish_reason %||% NA_character_
+  # Treat Azure/OpenAI content filter as triggered only if finish_reason=="content_filter"
+  content_filter_triggered <- identical(finish_reason, "content_filter")
+
+  # 3) get assistant message text (often JSON you want to parse)
+  content_text <- extract_assistant_text(ch0)
+
+  # 4) parse the assistant JSON payload (your expected key/value fields)
+  payload <- tryCatch(fromJSON(content_text), error = function(e) NULL)
+
+  if (!is.null(payload)) {
+    # Map to expected variables
+    extracted_values <- setNames(
+      as.character(payload[expected_variables] %||% NA),
+      expected_variables
+    )
+    correct_format <- all(!is.na(extracted_values))
+  } else {
+    extracted_values <- setNames(
+      rep("json_formatting_error", length(expected_variables)),
+      expected_variables
+    )
+    correct_format <- FALSE
+  }
+
+
+  combined <- c(
+    custom_id = as.character(custom_id),
+    content_filter_triggered = as.character(content_filter_triggered),
+    correct_json_format = as.character(correct_format),
+    extracted_values
+  )
+  as.character(combined)
+})
+    
+parsed_batch_output <- do.call(rbind, lapply(batch_output, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  
+# Rename the columns 
+colnames(parsed_batch_output) <- c("custom_id", "content_filter_triggered", "correct_json_format", 
+                            expected_variables)
+
+write_json(parsed_batch_output, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_test_gross_gpt4o_mini_batch_output.json")
+```
+### Calculate performance - gross test
+The test sets pulled in the previous chunks were reviewed manually by jmw prior to prompt engineering below.
+This chunk is to parse the manually reviewed df to match the output format of the llms
+```{r}
+test_vmacs <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/pmi_pilot_data_extract_75.xlsx") %>%
+  mutate(si_segment_ref = ifelse(si_section == "si_unspecified", "unspecified", si_section),
+         bx_type_ref = ifelse(bx_type == "endoscopic_pinch", "endoscopic", bx_type)) %>%
+  select(bx_id, bx_slide, si_segment_ref, bx_type_ref)
+
+parsed_batch_output <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_test_gross_gpt4o_mini_batch_output.json") %>%
+  select(image_name, bx_id, bx_slide, si_segment, bx_type)
+
+merged_gross <- merge(parsed_batch_output, test_vmacs) %>%
+  mutate(correct_segment = ifelse(si_segment == si_segment_ref, TRUE, FALSE),
+         correct_type = ifelse(bx_type == bx_type_ref, TRUE, FALSE))
+
+all <- nrow(merged_gross)
+true_segment <- sum(merged_gross$correct_segment, na.rm = TRUE)
+accuracy_segment <- true_segment/all
+
+true_type <- sum(merged_gross$correct_type, na.rm = TRUE)
+accuracy_type <- true_type/all
+
+print(paste0("Accuracy for segment id is: ", accuracy_segment))
+print(paste0("Accuracy for biopsy type is: ", accuracy_type))
+
+```
+
+### Prompt engineering and model selection - vmacs_description
+Tried extracting si_segment and bx_type from description instead. For this the results were largely concordant with the exception of not being able to differentiate between resections and full thickness in description (both are labelled full thickness). And in one record (na for bx type from both models in the gross fields - GPT4o correctly classified the record as endoscopic pinch while gpt4o mini gave na). For simplicity I will stick with extracting this data from the gross field and use gpt4o mini
+```{r}
+tuning_description <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json") %>%
+  select(image_name, bx_id, bx_slide, bx_block, vmacs_description)
+
+write_json(tuning_description, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_description.json", pretty = TRUE)
+
+```
+
+### Prompt engineering and model selection - vmacs_dx
+GPT4o did much better then GPT4o mini on this more complex task. GPT4o did perfect in the tuning set (even catching a very complex nuance in the description that I initially missed wehreas GOT4o mini frequently returned diagnoses for the wrong slide.)
+```{r}
+tuning_all <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json")
+
+#Add si_segment and bx_type from gross parsing
+tuning_gross_1_output <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/compare_models_llm_gross_tuning/output_tuning_gross_1.json") %>%
+  filter(model == "gpt-4o-mini") %>%
+  select(image_name, bx_id, bx_slide, si_segment, bx_type)
+
+tuning_merged <- merge(tuning_all, tuning_gross_1_output)
+
+tuning_dx <- tuning_merged %>%
+  select(image_name, bx_id, bx_slide, bx_block, bx_type, si_segment, vmacs_dx, vmacs_description, vmacs_comment, vmacs_addendum, vmacs_ancillary_tests)
+
+write_json(tuning_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_dx.json", pretty = TRUE)
+
+write_xlsx(tuning_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_dx.xlsx")
+```
+
+### Parse bx_hx
+Gpt4-o gave perfect answers for all tuning records while gpt4o mini consistently overcalled "mass" as a bx reason
+```{r}
+tuning_hx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json") %>%
+  select(image_name, vmacs_clinical_abstract)
+
+write_json(tuning_hx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_hx.json", pretty = TRUE)
+
+write_xlsx(tuning_hx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_hx.xlsx")
+```
+
+### Parse bx_gross and dx in one prompt
+Refined strategy primarily based on performance of gross approach in full test set:
+The performance of extracting bx_type was subpar (<0.6) whereas extacting bx_segment was suboptimal (<0.9).
+Since bx_type is not essential for the paper I am skipping it.
+Since si_segment is essential for extracting the right diagnosis for each slide, I refined the prompt to give the llm
+access to the full report (not just gross) when assigning. To avoid needing to feed the full report in multiple runs I combined the prompts for si_segment extraction and bx_dx extraction (prompt_gross_and_dx_2.txt).
+Prepared new input with all relevant fields here & run compare_models.
+GPT4o worked well in the 5 tuning slides - but not GPT4o mini. 
+Next printed an input file with the relevant fields to run a test batch on the test set
+
+```{r}
+tuning <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json")
+
+tuning_gross_dx <- tuning %>% select(image_name, bx_id, bx_slide, bx_block, vmacs_gross, vmacs_dx, vmacs_description, vmacs_comment, vmacs_addendum, vmacs_ancillary_tests)
+
+#write_json(tuning_gross_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_gross_dx.json", pretty = TRUE)
+
+
+#add distinct to remove duplicate image names (sometimes listed twice if T3T4 slide)
+all_gross_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/vmacs_bx_all.json") %>%
+  select(image_name, bx_id, bx_slide, bx_block, vmacs_gross, vmacs_dx, vmacs_description, vmacs_comment, vmacs_addendum, vmacs_ancillary_tests) %>%
+  distinct(image_name, .keep_all = TRUE)
+
+
+
+write_json(all_gross_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_gross_dx.json", pretty = TRUE)
+
+#filter the test cases
+pilot_pmi <- read_xlsx ("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/pmi_pilot_data_extract_75.xlsx") 
+
+test_gross_dx <- all_gross_dx %>% filter(image_name %in% pilot_pmi$image_name)
+
+write_json(test_gross_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/test_gross_dx.json", pretty = TRUE)
+```
+
+
+### Parse the gross_dx output from batch processing:
+```{r}
+
+batch_data <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/gpt4o_batch/test_gross_dx_file-852cda35-7baf-4b25-bd46-08c631597fee.jsonl")
+
+expected_variables <- c("image_name", 
+                        "bx_id", 
+                        "bx_slide", 
+                        "si_segment", 
+                        "bx_dx", 
+                        "enteritis_lymphocytic", 
+                        "enteritis_other",
+                        "lymphoma",
+                        "neoplasia_other",
+                        "dx_other",
+                        "normal",
+                        "enteritis_grade",
+                        "lymphoma_immunophenotype",
+                        "lymphoma_cell_size",
+                        "lymphoma_epitheliotropism",
+                        "ihc",
+                        "clonality")
+
+batch_output <- lapply(batch_data, function(item_json) {
+  # 1) parse the line into a list
+  item <- tryCatch(fromJSON(item_json, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (is.null(item)) {
+    return(c(parse_error = "TRUE"))
+  }
+
+  # 2) safe accessors for common fields
+  custom_id <- item$custom_id %||% NA_character_
+  ch0 <- tryCatch(item$response$body$choices[[1]], error = function(e) NULL)
+
+  finish_reason <- ch0$finish_reason %||% NA_character_
+  # Treat Azure/OpenAI content filter as triggered only if finish_reason=="content_filter"
+  content_filter_triggered <- identical(finish_reason, "content_filter")
+
+  # 3) get assistant message text (often JSON you want to parse)
+  content_text <- extract_assistant_text(ch0)
+  content_text <- strip_code_fences(content_text)
+  content_text <- extract_json_object(content_text)
+
+  # 4) parse the assistant JSON payload (your expected key/value fields)
+  payload <- tryCatch(jsonlite::fromJSON(content_text), error = function(e) NULL)
+
+  if (!is.null(payload)) {
+    # Map to expected variables
+    extracted_values <- setNames(
+      as.character(payload[expected_variables] %||% NA),
+      expected_variables
+    )
+    correct_format <- all(!is.na(extracted_values))
+  } else {
+    extracted_values <- setNames(
+      rep("json_formatting_error", length(expected_variables)),
+      expected_variables
+    )
+    correct_format <- FALSE
+  }
+
+
+  combined <- c(
+    custom_id = as.character(custom_id),
+    content_filter_triggered = as.character(content_filter_triggered),
+    correct_json_format = as.character(correct_format),
+    extracted_values
+  )
+  as.character(combined)
+})
+    
+parsed_batch_output <- do.call(rbind, lapply(batch_output, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  
+# Rename the columns 
+colnames(parsed_batch_output) <- c("custom_id", "content_filter_triggered", "correct_json_format", 
+                            expected_variables)
+
+write_json(parsed_batch_output, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_test_gross_dx_gpt4o_batch_output.json")
+
+
+```
+
+### Calculate performance of llm parsing in test set
+This chunk is to calculate the classification performance for each variable and class separately.
+#### Issues / Deviations
+- The reference standard was parsed prior to finalizing the parsing strategy. Worked around by adjusting the ref format below. 
+- The llm prompt does not specify how to handle grade ranges (e.g., mild to moderate) - for the ref standard I used the higher level of the range, llm answers modified post-processing to match.
+- The llm is prompted to group lymphocytic enteritis and lymphoplasmacytic enteritis as enteritis_lymphocytic, and all other enteritises as enteritis_other. A prominent reference/llm output discrepancis are mixed enteritis including other cells then lymphocytes and plasma cells. The llm typically classify this as both enteritis_lymphocytic and enteritis_other whereas the reference standard has them as enteritis_other. For this project I don't want them as enteritis_lymphocytic but instead of reprompting I will set double positives as enteritis_other only post processing.
+- The llm sometimes contradictively assigned an immunophenotype or epitheliotropism to cases not parsed as lymphoma or an enteritis grade to cases without enteritis. This can be handles in post-processing by setting non-enteritises as grade na etc. 
+- The field "clonality" is sometimes parsed as TRUE by the llm when clonality is suggested but not performed, can be corrected postprocessing by changing "true" clonalities that are not in the labl archive (this will produce FNs in cases where the clonality was performed elsewhere - comparatively rare)
+- The field IHC sometimes gives FP for other ihcs or if IHC was suggested and not done. No simple post-processing solution
+
+```{r}
+parsed_batch_output <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_test_gross_dx_gpt4o_batch_output.json")
+
+# Adjust reference standard to final format
+test_vmacs <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/pmi_pilot_data_extract_75.xlsx") %>%
+  mutate(si_segment_ref = ifelse(si_section == "si_unspecified", "unspecified", si_section),
+         enteritis_lymphocytic_ref = case_when(dx == "lpe" ~ TRUE,
+                                           dx == "le" ~ TRUE,
+                                           dx == "lpe_lymphoma" ~ TRUE,
+                                           TRUE ~ FALSE),
+         enteritis_other_ref = case_when(dx == "necrotizing_enteritis" ~ TRUE,
+                                     dx == "ee" ~ TRUE,
+                                     dx == "me" ~ TRUE,
+                                     dx == "me_lymphoma" ~ TRUE,
+                                     dx == "lymphoma_me" ~ TRUE,
+                                     dx == "ne" ~ TRUE,
+                                     TRUE ~ FALSE),
+         lymphoma_ref = case_when(dx == "lymphoma" ~ TRUE,
+                              dx == "lymphoma_me" ~ TRUE,
+                              dx == "lymphoma_other" ~ TRUE,
+                              dx == "lpe_lymphoma" ~ TRUE,
+                              dx == "me_lymphoma" ~ TRUE,
+                              TRUE ~ FALSE),
+         neoplasia_other_ref = case_when(dx == "mct" ~ TRUE,
+                                     dx == "plasmacytoma" ~ TRUE,
+                                     dx == "adenocarcinoma" ~ TRUE,
+                                     TRUE ~ FALSE),
+         dx_other_ref = case_when(dx == "fibrosis" ~ TRUE,
+                              dx == "other" ~ TRUE,
+                              TRUE ~ FALSE),
+         normal_ref = case_when(dx == "normal" ~ TRUE,
+                            TRUE ~ FALSE),
+         enteritis_grade_ref = enteritis_grade,
+         lymphoma_immunophenotype_ref = case_when(lymphoma_type == "tcl" ~ "t",
+                                                  lymphoma_type == "bcl_tcl" ~ "b__t",
+                                                  lymphoma_type == "na" ~ "na",
+                                                  TRUE ~ NA),
+         lymphoma_cell_size_ref = case_when(lymphoma_size == "na" ~ "na",
+                                        lymphoma_size == "small" ~ "small",
+                                        lymphoma_size == "intermediate" ~ "intermediate",
+                                        lymphoma_size == "large" ~ "large",
+                                        lymphoma_size == "large_small" ~ "small__large",
+                                        TRUE ~ NA), 
+         lymphoma_epitheliotropism_ref = case_when(lymphoma_ref == "FALSE" ~ "na",
+                                                   (lymphoma_ref == "TRUE" & lymphoma_epitheliotropism == "na") ~ "FALSE",
+                                                   TRUE ~ lymphoma_epitheliotropism),
+         ihc_ref = ihc,
+         clonality_ref = clonality) %>%
+  select(bx_id:bx_slide, dx, si_segment_ref:clonality_ref)
+         
+         
+         
+         
+merged <- merge(parsed_batch_output, test_vmacs) %>%
+  rename(bx_dx_ref = dx) %>%
+  mutate(enteritis_grade = case_when(enteritis_grade == "mild__moderate" ~ "moderate",
+                                     enteritis_grade == "mild_to_moderate" ~ "moderate",
+                                     TRUE ~ enteritis_grade),
+         lymphoma_cell_size = ifelse(lymphoma_cell_size == "medium", "intermediate", lymphoma_cell_size),
+         lymphoma_epitheliotropism = ifelse(lymphoma == FALSE, "na", lymphoma_epitheliotropism)) %>%
+  select(image_name, bx_id, bx_slide,si_segment, si_segment_ref, bx_dx, bx_dx_ref, enteritis_lymphocytic, enteritis_lymphocytic_ref, enteritis_other, enteritis_other_ref, lymphoma, lymphoma_ref, neoplasia_other, neoplasia_other_ref, dx_other, dx_other_ref, normal, normal_ref, enteritis_grade, enteritis_grade_ref, lymphoma_immunophenotype,  lymphoma_immunophenotype_ref,lymphoma_cell_size, lymphoma_cell_size_ref, lymphoma_epitheliotropism, lymphoma_epitheliotropism_ref, ihc, ihc_ref, clonality, clonality_ref) 
+
+vars <- c(
+  "si_segment",                 # multiclass
+  "enteritis_lymphocytic",      # binary
+  "enteritis_other",            # binary
+  "lymphoma",                   # binary
+  "neoplasia_other",            # binary
+  "dx_other",                   # binary
+  "normal",                     # binary
+  "enteritis_grade",            # multiclass
+  "lymphoma_immunophenotype",   # multiclass (e.g., "t","b__t","na")
+  "lymphoma_cell_size",         # multiclass (e.g., "small","intermediate","large","na")
+  "lymphoma_epitheliotropism",  # binary (TRUE/FALSE)
+  "ihc",                        # binary
+  "clonality"                   # binay
+)
+
+metrics_tbl <-
+  map_dfr(vars, function(v) {
+    ref_col <- paste0(v, "_ref")
+    classes <- find_classes(merged, v)
+
+    map_dfr(classes, function(cls) {
+      # Normalize boolean as "true"/"false" for naming consistency
+      class_label_for_name <- if (is.logical(cls)) tolower(as.character(cls)) else as.character(cls)
+
+      bin_metrics(merged[[ref_col]], merged[[v]], cls) %>%
+        mutate(
+          variable = v,
+          class = class_label_for_name,
+          variable__class = paste0(v, "__", class_label_for_name),
+          .before = 1
+        )
+    })
+  }) %>%
+  # round numeric columns sensibly for tables
+  mutate(across(c(prevalence, se, sp, ppv, npv, accuracy, f1), ~round(.x, 3))) %>%
+  arrange(variable, class)
+  
+
+vc_col <- if ("variable__class" %in% names(metrics_tbl)) "variable__class" else "variable_class"
+
+
+desired_order <- c(
+  # si_segment
+  "si_segment__duodenum",
+  "si_segment__jejunum",
+  "si_segment__ileum",
+  "si_segment__duodenum__jejunum",
+  "si_segment__duodenum__ileum",
+  "si_segment__jejunum__ileum",
+  "si_segment__unspecified",
+
+  # binary presence/absence-type
+  "enteritis_lymphocytic__true",
+  "enteritis_other__true",
+  "lymphoma__true",
+  "neoplasia_other__true",
+  "dx_other__true",
+  "normal__true",
+
+  # enteritis_grade
+  "enteritis_grade__minimal",
+  "enteritis_grade__mild",
+  "enteritis_grade__moderate",
+  "enteritis_grade__marked",
+  "enteritis_grade__severe",
+  "enteritis_grade__na",
+
+  # lymphoma_cell_size
+  "lymphoma_cell_size__small",
+  "lymphoma_cell_size__intermediate",
+  "lymphoma_cell_size__large",
+  "lymphoma_cell_size__small__large",
+  "lymphoma_cell_size__na",
+
+  # lymphoma_immunophenotype (present in your values: t, b__t, na)
+  "lymphoma_immunophenotype__t",
+  "lymphoma_immunophenotype__b__t",
+  "lymphoma_immunophenotype__na",
+
+  # lymphoma_epitheliotropism (your values are TRUE/FALSE/na as strings)
+  "lymphoma_epitheliotropism__TRUE",
+  "lymphoma_epitheliotropism__FALSE",
+  "lymphoma_epitheliotropism__na",
+
+  # tests
+  "ihc__true",
+  "clonality__true"
+)
+
+levels_full <- c(desired_order, setdiff(unique(metrics_tbl[[vc_col]]), desired_order))
+
+metrics_tbl_ordered <- metrics_tbl %>%
+  mutate(!!vc_col := factor(.data[[vc_col]], levels = levels_full)) %>%
+  arrange(.data[[vc_col]])
+
+
+
+#write_xlsx(metrics_tbl_ordered, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/llm_metrics.xlsx")
+```
+
+
+## External (LABL) Strategry development
+### Prompt engineering for labl cases
+```{r}
+
+set.seed(345)
+image_index <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") 
+
+labl <- image_index %>% filter(in_labl) %>% 
+  mutate(labl_specimen = ifelse((is.na(labl_specimen) & !is.na(labl_bx_slide)), labl_bx_slide, labl_specimen)) %>%
+  select(image_name, bx_id, bx_slide, labl_specimen, labl_diagnosis, labl_comment, labl_ihc_results, labl_clonality_trg1, labl_clonality_trg2)
+
+#write_json(labl, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/labl_all.json", pretty = TRUE)
+
+
+```
+
+### Pull tuning set labl - and prompt engineering
+Sample 5 bx that are not in pilot_pmi for tuning (prompt engineering).
+First prompt drafted with GPT-5 in ChatGPT teams was updated (twice) mainly to identify if the slide clonality was performed on (and the labl report refers to) matches the slide in the image.
+The third iteration worked well on the tuning set (with an added variable matching TRUE/FALSE) instead of gating out unmatched (v1 and v2). 
+see input/parse_path_report/prompt_gross_and_dx_labl_1 through 3 for actual prompts
+```{r}
+set.seed(321)
+
+tuning <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/labl_all.json") %>%
+  slice_sample(n=5) 
+
+write_json(tuning, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_labl.json", pretty = TRUE)
+
+
+```
+
+### Pull and parse labl test set
+Pulled 75 records and parsed manually (by jmw) - saved in input (labl_pilot_data_extract_75_2025-10-31)
+```{r}
+set.seed(345)
+labl <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/labl_all.json")
+
+labl_test <- labl %>%
+  slice_sample(n=75)
+
+#write_json(labl_test, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/labl_test.json", pretty = TRUE)
+
+#write_xlsx(labl_test, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report//labl_pilot_data_extract_75.xlsx")
+
+```
+
+### Parse batch output llm gross_dx test
+```{r}
+batch_data <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/gpt4o_batch/labl_test_file-2d92704d-035a-442a-9e37-3d64021417cd.jsonl")
+
+expected_variables <- c("image_name", 
+                        "bx_id", 
+                        "bx_slide", 
+                        "match",
+                        "si_segment", 
+                        "bx_dx", 
+                        "enteritis_lymphocytic", 
+                        "enteritis_other",
+                        "lymphoma",
+                        "neoplasia_other",
+                        "dx_other",
+                        "normal",
+                        "enteritis_grade",
+                        "lymphoma_immunophenotype",
+                        "lymphoma_cell_size",
+                        "lymphoma_epitheliotropism",
+                        "ihc",
+                        "clonality")
+
+batch_output <- lapply(batch_data, function(item_json) {
+  # 1) parse the line into a list
+  item <- tryCatch(fromJSON(item_json, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (is.null(item)) {
+    return(c(parse_error = "TRUE"))
+  }
+
+  # 2) safe accessors for common fields
+  custom_id <- item$custom_id %||% NA_character_
+  ch0 <- tryCatch(item$response$body$choices[[1]], error = function(e) NULL)
+
+  finish_reason <- ch0$finish_reason %||% NA_character_
+  # Treat Azure/OpenAI content filter as triggered only if finish_reason=="content_filter"
+  content_filter_triggered <- identical(finish_reason, "content_filter")
+
+  # 3) get assistant message text (often JSON you want to parse)
+  content_text <- extract_assistant_text(ch0)
+  content_text <- strip_code_fences(content_text)
+  content_text <- extract_json_object(content_text)
+
+  # 4) parse the assistant JSON payload (your expected key/value fields)
+  payload <- tryCatch(jsonlite::fromJSON(content_text), error = function(e) NULL)
+
+  if (!is.null(payload)) {
+    # Map to expected variables
+    extracted_values <- setNames(
+      as.character(payload[expected_variables] %||% NA),
+      expected_variables
+    )
+    correct_format <- all(!is.na(extracted_values))
+  } else {
+    extracted_values <- setNames(
+      rep("json_formatting_error", length(expected_variables)),
+      expected_variables
+    )
+    correct_format <- FALSE
+  }
+
+
+  combined <- c(
+    custom_id = as.character(custom_id),
+    content_filter_triggered = as.character(content_filter_triggered),
+    correct_json_format = as.character(correct_format),
+    extracted_values
+  )
+  as.character(combined)
+})
+    
+parsed_batch_output <- do.call(rbind, lapply(batch_output, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  
+# Rename the columns 
+colnames(parsed_batch_output) <- c("custom_id", "content_filter_triggered", "correct_json_format", 
+                            expected_variables)
+
+write_json(parsed_batch_output, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_labl_test_gpt4o_batch_output.json")
+
+```
+
+### Performance labl test
+Compared manually parsed info for test set (by jmw) -  saved in input (labl_pilot_data_extract_75_2025-10-31)
+Ran test set with GPT4o using selected prompt (see above) (input/parse_path_report/prompt_gross_and_dx_labl_3) using azure batch (input parsed with scripts/parse_batch_input_llm_gross_dx)
+Overall this worked well with discrepancies listed below:
+#### Issues
+##### Serious - consider not using
+- ihc - the llm consistently overcalled that ihc had been done with little/no evidence thereof - this info could not reliably be used
+##### Minor / solvable
+- "si_segment": Blocks named "D" often interpteted as duodenum  by llm if not other si_segment specified 
+- "dx_other": The llm sometimes erroneously included clonality results as additional diagnosis
+- "normal": The llm consistently labelled reports with missing information as normal - too far of a stretch for this archive
+- lymphoma_immunophenotype and lymphoma_epitheliotropism; The llm consistenly labelled records not classified as lymphoma as t and/or epitheliotropic if these were mentioned - could be solved post-processing
+##### Minor - acceptable interpretaions - could be used as is
+- "match" : When uncertain if a match - the llm leaned towards false while human true (acceptable error)
+- "enteritis-grade" the llm consistently used the grade for epithelotropism as the grade for enteritis - acceptable
+```{r}
+ref <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/labl_pilot_data_extract_75_2025-10-31.xlsx") %>%
+  mutate(match_ref = ifelse(si_segment_ref == "na", FALSE, TRUE),
+         enteritis_grade_ref = ifelse(enteritis_grade_ref == "FALSE", "na", enteritis_grade_ref))
+
+llm <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/parsed_labl_test_gpt4o_batch_output.json") %>%
+  select(image_name, match:clonality) %>%
+  mutate(across(everything(), ~ ifelse(. == "true", "TRUE",
+                                ifelse(. == "false", "FALSE", .)))) %>%
+  mutate(si_segment = case_when(match == FALSE ~ "na",
+                                match == TRUE & si_segment == "na" ~ "unspecified",
+                                TRUE ~ si_segment))
+
+bol_vars <- c("match_ref", "match", "enteritis_lymphocytic_ref", "enteritis_lymphocytic", "enteritis_other_ref", "enteritis_other", "lymphoma_ref", "lymphoma", "neoplasia_other_ref", "neoplasia_other", "dx_other_ref", "dx_other", "normal_ref", "normal", "lymphoma_epitheliotropism_ref", "lymphoma_epitheliotropism", "ihc_ref", "ihc", "clonality_ref", "clonality" ) 
+
+merged <- left_join(ref, llm) %>%
+  mutate(
+    across(
+      any_of(bol_vars),
+      ~ {
+        x <- .
+        # Normalize types
+        if (is.factor(x)) x <- as.character(x)
+        if (is.character(x)) {
+          x <- tolower(trimws(x))
+          x[x %in% c("na", "")] <- NA_character_
+          x <- case_when(
+            x %in% c("true","t","1","yes","y")  ~ TRUE,
+            x %in% c("false","f","0","no","n") ~ FALSE,
+            TRUE                               ~ NA
+          )
+        }
+        # Now x is logical or NA; fill NA -> FALSE
+        dplyr::coalesce(as.logical(x), FALSE)
+      }
+    )
+  ) %>%
+  select(image_name:labl_clonality_trg2, match_ref, match, si_segment_ref, si_segment, bx_dx_ref, bx_dx, 
+         enteritis_lymphocytic_ref, enteritis_lymphocytic,
+         enteritis_other_ref, enteritis_other,
+         lymphoma_ref, lymphoma,
+         neoplasia_other_ref, neoplasia_other,
+         dx_other_ref, dx_other,
+         normal_ref, normal, 
+         enteritis_grade_ref, enteritis_grade,
+         lymphoma_immunophenotype_ref, lymphoma_immunophenotype,
+         lymphoma_cell_size_ref, lymphoma_cell_size,
+         lymphoma_epitheliotropism_ref, lymphoma_epitheliotropism,
+         ihc_ref, ihc,
+         clonality_ref, clonality)  
+
+vars <- c(
+  "match",                      #binary
+  "si_segment",                 # multiclass
+  "enteritis_lymphocytic",      # binary
+  "enteritis_other",            # binary
+  "lymphoma",                   # binary
+  "neoplasia_other",            # binary
+  "dx_other",                   # binary
+  "normal",                     # binary
+  "enteritis_grade",            # multiclass
+  "lymphoma_immunophenotype",   # multiclass (e.g., "t","b__t","na")
+  "lymphoma_cell_size",         # multiclass (e.g., "small","intermediate","large","na")
+  "lymphoma_epitheliotropism",  # binary (TRUE/FALSE)
+  "ihc",                        # binary
+  "clonality"                   # binay
+)
+
+metrics_tbl <-
+  map_dfr(vars, function(v) {
+    ref_col <- paste0(v, "_ref")
+    classes <- find_classes(merged, v)
+
+    map_dfr(classes, function(cls) {
+      # Normalize boolean as "true"/"false" for naming consistency
+      class_label_for_name <- if (is.logical(cls)) tolower(as.character(cls)) else as.character(cls)
+
+      bin_metrics(merged[[ref_col]], merged[[v]], cls) %>%
+        mutate(
+          variable = v,
+          class = class_label_for_name,
+          variable__class = paste0(v, "__", class_label_for_name),
+          .before = 1
+        )
+    })
+  }) %>%
+  # round numeric columns sensibly for tables
+  mutate(across(c(prevalence, se, sp, ppv, npv, accuracy, f1), ~round(.x, 3))) %>%
+  arrange(variable, class)
+
+vc_col <- if ("variable__class" %in% names(metrics_tbl)) "variable__class" else "variable_class"
+
+# Your desired order (using the **double-underscore** convention that your data uses):
+desired_order <- c(
+  "match__true",
+  "match__false",
+  
+  # si_segment
+  "si_segment__duodenum",
+  "si_segment__jejunum",
+  "si_segment__ileum",
+  "si_segment__unspecified",
+  "si_segment__na",
+
+  # binary presence/absence-type
+  "enteritis_lymphocytic__true",
+  "enteritis_other__true",
+  "lymphoma__true",
+  "neoplasia_other__true",
+  "dx_other__true",
+  "normal__true",
+
+  # enteritis_grade
+  "enteritis_grade__minimal",
+  "enteritis_grade__mild",
+  "enteritis_grade__moderate",
+  "enteritis_grade__marked",
+  "enteritis_grade__severe",
+  "enteritis_grade__na",
+
+  # lymphoma_cell_size
+  "lymphoma_cell_size__small",
+  "lymphoma_cell_size__intermediate",
+  "lymphoma_cell_size__large",
+  "lymphoma_cell_size__na",
+
+  # lymphoma_immunophenotype (present in your values: t, b__t, na)
+  "lymphoma_immunophenotype__t",
+  "lymphoma_immunophenotype__na",
+
+  # lymphoma_epitheliotropism (your values are TRUE/FALSE/na as strings)
+  "lymphoma_epitheliotropism__TRUE",
+  "lymphoma_epitheliotropism__FALSE",
+
+  # tests
+  "ihc__true",
+  "clonality__true"
+)
+
+levels_full <- c(desired_order, setdiff(unique(metrics_tbl[[vc_col]]), desired_order))
+
+metrics_tbl_ordered <- metrics_tbl %>%
+  mutate(!!vc_col := factor(.data[[vc_col]], levels = levels_full)) %>%
+  arrange(.data[[vc_col]])
+
+
+
+write_xlsx(metrics_tbl_ordered, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/llm_metrics_labl.xlsx")
+```
+## Compiled Local & External
+### Performance (compiled & cleaned for pub)
+```{r}
+local <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/parse_path_report/llm_metrics_commented.xlsx") %>%
+  filter(variable__class != "si_segment__jejunum__ileum") %>% # only one instance (correctly parsed) - remove for simplicity 
+  filter(variable__class != "si_segment__unspecified") %>%  # errors already reflected in duo/jej/ileum classes 
+  filter(variable__class != "enteritis_grade__na") %>% #errors already reflected in other classes
+  filter(variable__class != "lymphoma_cell_size__na") %>% #errors already reflected in other classes
+  filter(variable__class != "lymphoma_immunophenotype__na") %>% #errors already reflected in other classes
+  filter(variable__class != "lymphoma_epitheliotropism__FALSE") %>% #errors already reflected in other classes
+  filter(variable__class != "lymphoma_epitheliotropism__na") %>% #errors already reflected in other classes
+   mutate(
+    class = if_else(class == "b__t", "b", class),
+    variable__class = if_else(variable__class == "lymphoma_immunophenotype__b__t",
+                              "lymphoma_immunophenotype__b",
+                              variable__class) #only one instance with both a b and t cell lymphoma - simplify to b
+  )
+
+#combine minimal and mild (low prev of minimal - only error is minimal/mild confusion -> inconsequential)
+to_merge <- c("enteritis_grade__minimal", "enteritis_grade__mild")
+rows <- local %>% 
+  filter(variable__class %in% to_merge)
+
+n_new  <- sum(rows$n,  na.rm = TRUE) /2
+tp_new <- sum(rows$tp + rows$fp, na.rm = TRUE)   # TP = TP+FP from both classes
+fp_new <- 0L
+fn_new <- 0L
+tn_new <- n_new - tp_new
+
+new_row <- tibble(
+  variable        = "enteritis_grade",
+  class           = "mild",
+  variable__class = "enteritis__grade_mild",
+  tp = tp_new,
+  tn = tn_new,
+  fp = fp_new,
+  fn = fn_new,
+  n  = n_new
+) %>%
+  mutate(
+    prevalence = ifelse(n > 0, (tp + fn) / n, NA_real_),
+    se         = ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_),
+    sp         = ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_),
+    ppv        = ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_),
+    npv        = ifelse((tn + fn) > 0, tn / (tn + fn), NA_real_),
+    accuracy   = ifelse(n > 0, (tp + tn) / n, NA_real_),
+    f1         = ifelse((2 * tp + fp + fn) > 0, 2 * tp / (2 * tp + fp + fn), NA_real_),
+    comment_errors = "Minimal merged into mild; within-class confusions collapse to TP"
+  )
+
+local_merged <- local %>%
+  filter(!variable__class %in% to_merge) %>%
+  bind_rows(new_row)
+
+#combined marked and severe - because few cases (no confusion amongst them)
+
+to_merge2 <- c("enteritis_grade__marked", "enteritis_grade__severe")
+
+rows2 <- local_merged %>%
+  filter(variable__class %in% to_merge2)
+
+# extract existing comment from the 'marked' row (if any)
+comment_marked <- rows2 %>%
+  filter(variable__class == "enteritis_grade__marked") %>%
+  pull(comment_errors) %>%
+  paste(collapse = "; ")
+
+# apply your rules
+n_new2  <- sum(rows2$n,  na.rm = TRUE) / 2
+tp_new2 <- sum(rows2$tp, na.rm = TRUE)
+fp_new2 <- sum(rows2$fp, na.rm = TRUE)
+fn_new2 <- sum(rows2$fn, na.rm = TRUE)
+tn_new2 <- n_new2 - (tp_new2 + fp_new2 + fn_new2)
+
+# construct the new merged row
+new_row2 <- tibble(
+  variable        = "enteritis_grade",
+  class           = "marked",
+  variable__class = "enteritis__grade_marked",
+  tp = tp_new2,
+  tn = tn_new2,
+  fp = fp_new2,
+  fn = fn_new2,
+  n  = n_new2
+) %>%
+  mutate(
+    prevalence = ifelse(n > 0, (tp + fn) / n, NA_real_),
+    se         = ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_),
+    sp         = ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_),
+    ppv        = ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_),
+    npv        = ifelse((tn + fn) > 0, tn / (tn + fn), NA_real_),
+    accuracy   = ifelse(n > 0, (tp + tn) / n, NA_real_),
+    f1         = ifelse((2 * tp + fp + fn) > 0, 2 * tp / (2 * tp + fp + fn), NA_real_),
+    comment_errors = paste(
+      "Marked and severe merged by summing TP/FP/FN; n = sum(n)/2; TN = n - (TP+FP+FN).",
+      comment_marked
+    )
+  )
+
+# replace old rows with the merged one
+local_merged2 <- local_merged %>%
+  filter(!variable__class %in% to_merge2) %>%
+  bind_rows(new_row2)
+
+#combine a single report with both a small and lcl into large (because more significant)
+to_merge3 <- c("lymphoma_cell_size__large", "lymphoma_cell_size__small__large")
+
+rows3 <- local_merged2 %>%
+  filter(variable__class %in% to_merge3)
+
+# apply your rules
+n_new3  <- sum(rows3$n, na.rm = TRUE)/2
+tp_new3 <- sum(rows3$tp, na.rm = TRUE) + 1  # convert the FP/FN pair into one TP
+fp_new3 <- 0L
+fn_new3 <- 0L
+tn_new3 <- n_new3 - tp_new3
+
+# extract comment from the large class if it exists
+comment_large <- rows3 %>%
+  filter(variable__class == "lymphoma_cell_size__large") %>%
+  pull(comment_errors) %>%
+  paste(collapse = "; ")
+
+# construct new merged row
+new_row3 <- tibble(
+  variable        = "lymphoma_cell_size",
+  class           = "large",
+  variable__class = "lymphoma_cell_size__large",
+  tp = tp_new3,
+  tn = tn_new3,
+  fp = fp_new3,
+  fn = fn_new3,
+  n  = n_new3
+) %>%
+  mutate(
+    prevalence = ifelse(n > 0, (tp + fn) / n, NA_real_),
+    se         = ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_),
+    sp         = ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_),
+    ppv        = ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_),
+    npv        = ifelse((tn + fn) > 0, tn / (tn + fn), NA_real_),
+    accuracy   = ifelse(n > 0, (tp + tn) / n, NA_real_),
+    f1         = ifelse((2 * tp + fp + fn) > 0, 2 * tp / (2 * tp + fp + fn), NA_real_),
+    comment_errors = paste(
+      "Merged large and small_large; single FP/FN pair corrected to TP; all errors set to 0; TN = n - TP.",
+      comment_large
+    )
+  )
+
+# replace the old rows with the merged one
+local_merged3 <- local_merged2 %>%
+  filter(!variable__class %in% to_merge3) %>%
+  bind_rows(new_row3) 
+
+#for supplemental table
+write_xlsx(local_merged3, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/local_llm_performance_parsed_full.xlsx")
+
+#for supplemental table
+external <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/parse_path_report/llm_metrics_labl_reviewed.xlsx") %>%
+  filter(variable__class != "si_segment__unspecified") %>% #errors already reflected in other classes
+  filter(variable__class != "si_segment__na") %>% #errors already reflected in other classes
+  filter(variable__class != "enteritis_grade__na") %>% 
+  filter(variable__class != 	"lymphoma_cell_size__na") %>% 
+  filter(variable__class != 	"lymphoma_immunophenotype__na") %>%
+  filter(variable != "match") #only for internal record matching
+
+write_xlsx(external, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/external_llm_performance_parsed_full.xlsx")
+
+
+local_for_merge <- local_merged3 %>%
+  rename(se_local = se,
+         ppv_local = ppv,
+         f1_local = f1) %>%
+  select(variable, class, se_local, ppv_local, f1_local) %>%
+  mutate(across(where(is.character),
+               ~ if_else(.x %in% c("true", "TRUE"), "True", .x)))
+
+external_for_merge <- external %>%
+  rename(se_external  = se,
+         ppv_external = ppv,
+         f1_external = f1) %>%
+  mutate(ppv_external = ifelse(is.na(se_external), NA, ppv_external),
+         f1_external = ifelse(is.na(se_external), NA, f1_external)) %>%
+  select(variable, class, se_external, ppv_external, f1_external) %>%
+  mutate(across(where(is.character),
+                ~ if_else(.x %in% c("true", "TRUE"), "True", .x)))
+
+gpt4o_performance <- merge(
+  local_for_merge,
+  external_for_merge,
+  by = c("variable", "class"),
+  all = TRUE
+)
+
+variable_order <- c(
+  "si_segment",
+  "enteritis_lymphocytic",
+  "enteritis_other",
+  "lymphoma",
+  "neoplasia_other",
+  "dx_other",
+  "normal",
+  "enteritis_grade",
+  "lymphoma_cell_size",
+  "lymphoma_immunophenotype",
+  "lymphoma_epitheliotropism",
+  "ihc",
+  "clonality"
+)
+
+gpt4o_performance_ordered <- gpt4o_performance %>%
+  mutate(
+    variable = factor(variable, levels = variable_order),
+
+    # 2) Within-variable order for 'class'
+    class_rank = case_when(
+      variable == "si_segment" & class == "duodenum"  ~ 1L,
+      variable == "si_segment" & class == "jejunum"   ~ 2L,
+      variable == "si_segment" & class == "ileum"     ~ 3L,
+
+      variable == "enteritis_grade" & class == "mild"     ~ 1L,
+      variable == "enteritis_grade" & class == "moderate" ~ 2L,
+      variable == "enteritis_grade" & class == "marked"   ~ 3L,
+
+      variable == "lymphoma_cell_size" & class == "small"        ~ 1L,
+      variable == "lymphoma_cell_size" & class == "intermediate" ~ 2L,
+      variable == "lymphoma_cell_size" & class == "large"        ~ 3L,
+
+      variable == "lymphoma_immunophenotype" & class %in% c("t","T") ~ 1L,
+      variable == "lymphoma_immunophenotype" & class %in% c("b","B") ~ 2L,
+
+      TRUE ~ 1L  # single-class variables or anything else
+    )
+  ) %>%
+  arrange(variable, class_rank, class) %>%
+  select(-class_rank) 
+
+format1 <- function(x) ifelse(is.na(x), "", sprintf("%.1f", x * 100))
+
+gpt4o_for_pub <- gpt4o_performance_ordered %>%
+  dplyr::mutate(
+    Variable = case_when(variable == "si_segment" ~ "Segment",
+                         variable == "enteritis_lymphocytic" ~ "LPE",
+                         variable == "enteritis_other" ~ "Other enteritis",
+                         variable == "lymphoma" ~ "Lymphoma",
+                         variable == "neoplasia_other" ~ "Other neoplasia",
+                         variable == "dx_other" ~ "Other diagnosis",
+                         variable == "normal" ~ "Normal",
+                         variable == "enteritis_grade" ~ "Enteritis - grade",
+                         variable == "lymphoma_cell_size" ~ "Lymphoma - cell size",
+                         variable == "lymphoma_immunophenotype" ~ "Lymphoma - immunophenotype",
+                         variable == "lymphoma_epitheliotropism" ~ "Lymphoma - epitheliotropism",
+                         variable == "ihc" ~ "IHC",
+                         variable == "clonality" ~ "Clonality"),
+                         
+                         
+    Class = str_to_title(class),
+    `Sensitivity %\n(local/external)` = paste0(format1(se_local), "/", format1(se_external)),
+    `PPV %\n(local/external)`          = paste0(format1(ppv_local), "/", format1(ppv_external)),
+    `F1 score %\n(local/external)`     = paste0(format1(f1_local), "/", format1(f1_external))
+  ) %>%
+  dplyr::select(
+    Variable, Class,
+    `Sensitivity %\n(local/external)`,
+    `PPV %\n(local/external)`,
+    `F1 score %\n(local/external)`
+  )
+
+
+summary_table <- data.frame(
+  source = c("local", "external"),
+  median_se  = c(median(gpt4o_performance_ordered$se_local, na.rm = TRUE),
+                 median(gpt4o_performance_ordered$se_external, na.rm = TRUE)),
+  range_se   = c(
+    paste0(round(min(gpt4o_performance_ordered$se_local, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$se_local, na.rm = TRUE), 3)),
+    paste0(round(min(gpt4o_performance_ordered$se_external, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$se_external, na.rm = TRUE), 3))
+  ),
+  median_ppv = c(median(gpt4o_performance_ordered$ppv_local, na.rm = TRUE),
+                 median(gpt4o_performance_ordered$ppv_external, na.rm = TRUE)),
+  range_ppv  = c(
+    paste0(round(min(gpt4o_performance_ordered$ppv_local, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$ppv_local, na.rm = TRUE), 3)),
+    paste0(round(min(gpt4o_performance_ordered$ppv_external, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$ppv_external, na.rm = TRUE), 3))
+  ),
+  median_f1  = c(median(gpt4o_performance_ordered$f1_local, na.rm = TRUE),
+                 median(gpt4o_performance_ordered$f1_external, na.rm = TRUE)),
+  range_f1   = c(
+    paste0(round(min(gpt4o_performance_ordered$f1_local, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$f1_local, na.rm = TRUE), 3)),
+    paste0(round(min(gpt4o_performance_ordered$f1_external, na.rm = TRUE), 3), "–",
+           round(max(gpt4o_performance_ordered$f1_external, na.rm = TRUE), 3))
+  )
+)
+
+summary_table
+
+write_xlsx(gpt4o_for_pub, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/llm_perf_main_t4.xlsx")
+```
+
+## Analysis, parse, clean and combine
+### Parse all local vmacs - batch output
+```{r}
+batch_data <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/gpt4o_batch/all_gross_dx_gpt4o_file-19cba428-769d-4bd9-9ae6-a91801457dde.jsonl")
+
+expected_variables <- c("image_name", 
+                        "bx_id", 
+                        "bx_slide", 
+                        "si_segment", 
+                        "bx_dx", 
+                        "enteritis_lymphocytic", 
+                        "enteritis_other",
+                        "lymphoma",
+                        "neoplasia_other",
+                        "dx_other",
+                        "normal",
+                        "enteritis_grade",
+                        "lymphoma_immunophenotype",
+                        "lymphoma_cell_size",
+                        "lymphoma_epitheliotropism",
+                        "ihc",
+                        "clonality")
+
+batch_output <- lapply(batch_data, function(item_json) {
+  # 1) parse the line into a list
+  item <- tryCatch(fromJSON(item_json, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (is.null(item)) {
+    return(c(parse_error = "TRUE"))
+  }
+
+  # 2) safe accessors for common fields
+  custom_id <- item$custom_id %||% NA_character_
+  ch0 <- tryCatch(item$response$body$choices[[1]], error = function(e) NULL)
+
+  finish_reason <- ch0$finish_reason %||% NA_character_
+  # Treat Azure/OpenAI content filter as triggered only if finish_reason=="content_filter"
+  content_filter_triggered <- identical(finish_reason, "content_filter")
+
+  # 3) get assistant message text (often JSON you want to parse)
+  content_text <- extract_assistant_text(ch0)
+  content_text <- strip_code_fences(content_text)
+  content_text <- extract_json_object(content_text)
+
+  # 4) parse the assistant JSON payload (your expected key/value fields)
+  payload <- tryCatch(jsonlite::fromJSON(content_text), error = function(e) NULL)
+
+  if (!is.null(payload)) {
+    # Map to expected variables
+    extracted_values <- setNames(
+      as.character(payload[expected_variables] %||% NA),
+      expected_variables
+    )
+    correct_format <- all(!is.na(extracted_values))
+  } else {
+    extracted_values <- setNames(
+      rep("json_formatting_error", length(expected_variables)),
+      expected_variables
+    )
+    correct_format <- FALSE
+  }
+
+
+  combined <- c(
+    custom_id = as.character(custom_id),
+    content_filter_triggered = as.character(content_filter_triggered),
+    correct_json_format = as.character(correct_format),
+    extracted_values
+  )
+  as.character(combined)
+})
+    
+parsed_batch_output <- do.call(rbind, lapply(batch_output, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  
+# Rename the columns 
+colnames(parsed_batch_output) <- c("custom_id", "content_filter_triggered", "correct_json_format", 
+                            expected_variables)
+
+write_json(parsed_batch_output, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_gross_dx_gpt4o_batch_output.json") 
+
+```
+
+### Parse all external labl - batch output
+```{r}
+batch_data <- readLines("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/gpt4o_batch/labl_all_file-74ae1fec-b02d-4d48-8644-5bc5dfd05e50.jsonl")
+
+expected_variables <- c("image_name", 
+                        "bx_id", 
+                        "bx_slide", 
+                        "match",
+                        "si_segment", 
+                        "bx_dx", 
+                        "enteritis_lymphocytic", 
+                        "enteritis_other",
+                        "lymphoma",
+                        "neoplasia_other",
+                        "dx_other",
+                        "normal",
+                        "enteritis_grade",
+                        "lymphoma_immunophenotype",
+                        "lymphoma_cell_size",
+                        "lymphoma_epitheliotropism",
+                        "ihc",
+                        "clonality")
+
+batch_output <- lapply(batch_data, function(item_json) {
+  # 1) parse the line into a list
+  item <- tryCatch(fromJSON(item_json, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (is.null(item)) {
+    return(c(parse_error = "TRUE"))
+  }
+
+  # 2) safe accessors for common fields
+  custom_id <- item$custom_id %||% NA_character_
+  ch0 <- tryCatch(item$response$body$choices[[1]], error = function(e) NULL)
+
+  finish_reason <- ch0$finish_reason %||% NA_character_
+  # Treat Azure/OpenAI content filter as triggered only if finish_reason=="content_filter"
+  content_filter_triggered <- identical(finish_reason, "content_filter")
+
+  # 3) get assistant message text (often JSON you want to parse)
+  content_text <- extract_assistant_text(ch0)
+  content_text <- strip_code_fences(content_text)
+  content_text <- extract_json_object(content_text)
+
+  # 4) parse the assistant JSON payload (your expected key/value fields)
+  payload <- tryCatch(jsonlite::fromJSON(content_text), error = function(e) NULL)
+
+  if (!is.null(payload)) {
+    # Map to expected variables
+    extracted_values <- setNames(
+      as.character(payload[expected_variables] %||% NA),
+      expected_variables
+    )
+    correct_format <- all(!is.na(extracted_values))
+  } else {
+    extracted_values <- setNames(
+      rep("json_formatting_error", length(expected_variables)),
+      expected_variables
+    )
+    correct_format <- FALSE
+  }
+
+
+  combined <- c(
+    custom_id = as.character(custom_id),
+    content_filter_triggered = as.character(content_filter_triggered),
+    correct_json_format = as.character(correct_format),
+    extracted_values
+  )
+  as.character(combined)
+})
+    
+parsed_batch_output <- do.call(rbind, lapply(batch_output, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  
+# Rename the columns 
+colnames(parsed_batch_output) <- c("custom_id", "content_filter_triggered", "correct_json_format", 
+                            expected_variables)
+
+write_json(parsed_batch_output, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_labl_gpt4o_batch_output.json")
+
+```
+
+
+### Pull age from vmacs
+Pull age from patients (svm_archives/vmth/output)
+#### Issues /deviations
+13 of 85,732 patients have multiple birth dates - use first listed for now
+```{r, warning=FALSE}
+
+## Pull Birth year from patient data
+patients <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/svm_archives/vmth/output/patients/feline_1985-2024/patients.json")
+
+dob_tbl <- imap_dfr(patients, ~{
+  vr <- .x$visit_records
+  # pull unique non-missing DOBs
+  dob_vals <- unique(vr$date_of_birth)
+  dob_vals <- dob_vals[!is.na(dob_vals)]
+
+  # coerce to Date (handles Date, POSIXct, numeric Excel serials, or char)
+  dob_vals <- coerce_to_date(dob_vals)
+
+  # sanity check: if multiple different DOBs exist, keep the first and warn
+  if (length(dob_vals) > 1) {
+    warning(paste0("Multiple date_of_birth values for patient_id ", .y,
+                ": using the first (", dob_vals[1], ")."))
+  }
+  tibble(
+    patient_id     = .y,
+    date_of_birth  = if (length(dob_vals)) dob_vals[1] else as.Date(NA)
+  )
+}) 
+
+dob_tbl <- dob_tbl %>%
+  rename(vmacs_patient_id = patient_id)
+
+write_json(dob_tbl, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dob_patients.json", pretty = TRUE)
+```
+
+
+### Parse age and breed, and anonymize lab data 
+and unite labl and vmacs data
+use lab_no (from previous paper) for labl labs
+and add set affiliation
+```{r}
+dob_tbl <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dob_patients.json")
+
+#read in all wsis from flow_of_cases (failed scans and scans prior to 1999 removed)
+all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json") %>%
+  select(image_name, image_format, bx_id, bx_slide, staining, processing_lab, scanning_location, scanner, in_labl, in_vmacs, vmacs_bx_year, vmacs_patient_id, vmacs_visit_id, vmacs_breed, vmacs_bx_date, use_set_labl_2020, use_batch_labl_2020, labl_date, labl_species, labl_breed, labl_dob_age, processing_batch) %>%
+  filter(staining == "he") %>%
+  left_join(dob_tbl)
+
+# handle age 
+# Infer century for 2-digit years (assumes <= current YY => 2000s, else 1900s)
+infer_century <- function(two_digit) {
+  y2 <- suppressWarnings(as.integer(two_digit))
+  if (is.na(y2)) return(NA_integer_)
+  cutoff <- as.integer(format(Sys.Date(), "%y"))
+  if (y2 <= cutoff) 2000L + y2 else 1900L + y2
+}
+
+# Extract birth year (YYYY) from a single string
+extract_birth_year <- function(x) {
+  if (is.na(x) || !nzchar(x)) return(NA_integer_)
+  s <- tolower(trimws(x))
+
+  # 1) Prefer a 4-digit year inside parentheses (e.g., "8yo (~2020)")
+  m <- str_match(s, "\\((?:~\\s*)?(\\d{4})\\)")
+  if (!is.na(m[,2])) return(as.integer(m[,2]))
+
+  # 2) Year ranges like "YYYY-YYYY" or "~YYYY-YYYY" -> take the first YYYY
+  m <- str_match(s, "~?\\s*(\\d{4})\\s*-\\s*(\\d{4})")
+  if (!is.na(m[,2])) return(as.integer(m[,2]))
+
+  # 3) Any standalone 4-digit year (covers YYYY, M/D/YYYY, M/YYYY)
+  m <- str_match(s, "(\\d{4})")
+  if (!is.na(m[,2])) return(as.integer(m[,2]))
+
+  # 4) Text month with 2-digit year (e.g., "DD/sept/23" or "12/Sept/09")
+  #    Capture the last 2-digit token if a month name is present
+  if (str_detect(s, "(Jan|Feb|Mar|Apr|May|MAY|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)")) {
+    m2 <- str_match(s, "(?:Jan|Feb|Mar|Apr|May|MAY|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[^0-9]*?(\\d{2})(?!\\d)")
+    if (!is.na(m2[,2])) return(infer_century(m2[,2]))
+  }
+
+  # 5) Nothing found
+  NA_integer_
+}
+
+# Extract age in years (numeric) from a single string
+extract_age_years <- function(x) {
+  if (is.na(x) || !nzchar(x)) return(NA_real_)
+  s <- tolower(trimws(x))
+
+  # NA-like strings
+  if (s %in% c("NA", "na", "not specified", "unk")) return(NA_real_)
+
+  # base years: handles "11yo", "5+ years", "7 yrs", "10 year"
+  # capture the first integer before "yo", "years", "yrs", "y"
+  m_years <- str_match(s, "(\\d+)\\s*\\+?\\s*(?:years?|yrs?|yo|y)\\b")
+  yrs <- suppressWarnings(as.numeric(m_years[,2]))
+
+  # months: handles "7yo11months", "11 months", "11mos"
+  m_months <- str_match(s, "(\\d+)\\s*(?:months?|mos?)\\b")
+  mos <- suppressWarnings(as.numeric(m_months[,2]))
+
+  # If string is just something like "11yo" (already caught above) we're good.
+  # If it’s only months without years, don’t treat that as a valid age in years.
+  if (is.na(yrs) && !is.na(mos)) {
+    # if you prefer to convert months-only to years, uncomment:
+    # return(round(mos / 12, 2))
+    return(NA_real_)
+  }
+
+  if (is.na(yrs)) return(NA_real_)
+  if (!is.na(mos)) yrs <- yrs + mos / 12
+  round(yrs, 2)
+}
+
+all_wsis_age_prep <- all_wsis %>%
+  mutate(
+    birth_year = map_int(labl_dob_age, extract_birth_year),
+    labl_age_years  = map_dbl(labl_dob_age, extract_age_years)
+  )
+
+to_date <- function(x) {
+  # already Date/POSIX/numeric Excel serials
+  if (inherits(x, "Date"))   return(x)
+  if (inherits(x, "POSIXt")) return(as.Date(x))
+  if (is.numeric(x))         return(as.Date(x, origin = "1899-12-30"))
+
+  s <- as.character(x)
+  # NEW: keep only the part before "|||"
+  s <- trimws(sub("\\|\\|\\|.*$", "", s))
+
+  out <- as.Date(NA_real_)
+
+  # try timestamp "YYYY-MM-DD HH:MM:SS" (and variants)
+  tmp <- suppressWarnings(lubridate::ymd_hms(s, tz = "UTC", quiet = TRUE))
+  out <- ifelse(!is.na(tmp), as.Date(tmp), out)
+
+  # plain ISO date "YYYY-MM-DD"
+  tmp <- suppressWarnings(lubridate::ymd(s, quiet = TRUE))
+  out <- ifelse(is.na(out) & !is.na(tmp), as.Date(tmp), out)
+
+  # common alt orders
+  tmp <- suppressWarnings(lubridate::mdy(s, quiet = TRUE))
+  out <- ifelse(is.na(out) & !is.na(tmp), as.Date(tmp), out)
+
+  tmp <- suppressWarnings(lubridate::dmy(s, quiet = TRUE))
+  out <- ifelse(is.na(out) & !is.na(tmp), as.Date(tmp), out)
+
+  # month names / mixed formats
+  tmp <- suppressWarnings(lubridate::parse_date_time(
+    s,
+    orders = c("Ymd HMS","Ymd HM","Ymd H","dbY","dby","bdY","bdy","mdY","dmy"),
+    tz = "UTC"
+  ))
+  out <- ifelse(is.na(out) & !is.na(tmp), as.Date(tmp), out)
+
+  as.Date(out, origin = "1970-01-01")
+}
+
+all_wsis_age <- all_wsis_age_prep %>%
+  mutate(
+    # Coerce inputs
+    bx_date   = to_date(vmacs_bx_date),
+    dob_date  = to_date(date_of_birth),
+    lbl_date  = to_date(labl_date),
+    byear_int = suppressWarnings(as.integer(birth_year)),
+    labl_age_num = suppressWarnings(as.numeric(labl_age_years)),
+
+    # 1) From two dates (preferred)
+    age_from_dates = if_else(
+      !is.na(bx_date) & !is.na(dob_date),
+      floor(time_length(interval(dob_date, bx_date), "years")),
+      NA_real_
+    ),
+
+    # 2) From labl_age_years
+    age_from_label = if_else(!is.na(labl_age_num), floor(labl_age_num), NA_real_),
+
+    # 3) From birth_year and labl_date (uses calendar years difference)
+    age_from_by_ld = if_else(
+      !is.na(byear_int) & !is.na(lbl_date),
+      floor(year(lbl_date) - byear_int),
+      NA_real_
+    ),
+
+    # Priority: dates → label → birth_year + labl_date
+    age_years = coalesce(age_from_dates, age_from_label, age_from_by_ld),
+    bx_year = coalesce(
+      vmacs_bx_year,
+      year(to_date(labl_date)))) %>%
+  select(-bx_date, -dob_date, -lbl_date, -byear_int, -labl_age_num,
+         -age_from_dates, -age_from_label, -age_from_by_ld)
+
+#Handle breed
+# --- Canonical mapping (add to this as you encounter more forms) ---
+breed_map <- c(
+  "DSH" = "DSH",
+  "DLH" = "DLH",
+  "DMH" = "DMH",
+  "DSJ" = "Domestic Short Hair",        # likely typo for DSH
+  "AMERICAN DOMESTIC SHORTHAIR" = "Domestic Short Hair",
+
+  "SIAM" = "Siamese",
+  "SIAMESE" = "Siamese",
+  "ABBY" = "Abyssinian",
+  "ABYSSINIAN" = "Abyssinian",
+  "AMERICAN SHORTHAIR" = "American Shorthair",
+  "EUROPEAN SHORTHAIR" = "European Shorthair",
+  "NORWEGIAN FOREST CAT" = "Norwegian Forest Cat",
+  "RUSSIAN BLUE" = "Russian Blue",
+  "SPHYNX" = "Sphynx",
+  "SNOWSHOE" = "Snowshoe",
+  "PERSIAN" = "Persian",
+  "HIMALAYAN" = "Himalayan",
+  "RAGDOLL" = "Ragdoll",
+  "BIRMAN" = "Birman",
+  "BENGAL" = "Bengal",
+  "BENGALESE" = "Bengal",               # seen variant
+  "MAINE" = "Maine Coon",
+  "MAINE COON" = "Maine Coon",
+  "SCOTTISH FOLD" = "Scottish Fold",
+  "MANX" = "Manx",
+  "BOBTAIL" = "Bobtail",                # generic (could refine to American/Japanese)
+  "REX" = "Rex",                        # generic (Cornish/Devon if known)
+  "CORNISH REX" = "Cornish Rex",
+  "TOYGER" = "Toyger",
+  "SAVANNAH" = "Savannah",
+  "JUNGLE CAT" = "Jungle Cat",
+  "EGY MAU" = "Egyptian Mau",
+  "EGYPTIAN MAU" = "Egyptian Mau",
+  "TURKISH ANGORA" = "Turkish Angora",
+  "SCOTTISH FOLD" = "Scottish Fold",
+  "BOMBAY" = "Bombay",
+
+  # labl values you showed explicitly:
+  "ABYSSINIAN" = "Abyssinian",
+  "MAINE COON MIX" = "Maine Coon",      # will still tag as Mix via rule below
+  "CALICO" = "Calico",                  # pattern, but keep as given
+  "LYNX"   = "Lynx"                     # often a pattern (lynx point); keep literal
+)
+
+unknown_tokens <- c("IR","AIR","TIC","FV","X")  # treat these as non-breeds/unknown
+
+# --- Normalizer for a single cell from either column ---
+normalize_breed <- function(x) {
+  if (is.na(x)) return(NA_character_)
+
+  s <- str_squish(toupper(as.character(x)))
+
+  # trivial missing values
+  if (s %in% c("", "NA", "NOT SPECIFIED")) return(NA_character_)
+
+  # Remove FE- prefix
+  s <- str_remove(s, "^FE-")
+
+  # Flag mixes
+  is_mix <- str_detect(s, "\\bMIX\\b") || str_detect(s, "\\bX/") || str_detect(s, "/")
+
+  # Remove "X/" markers but keep slash-separated components
+  s <- str_replace_all(s, "\\bX/", "")
+
+  # Split by "/" into components
+  parts <- unlist(str_split(s, "/"))
+  parts <- str_squish(parts)
+  parts <- parts[parts != ""]
+
+  # Map tokens to canonical names
+  canon <- map_chr(parts, function(tok) {
+    # direct dictionary hit
+    if (tok %in% names(breed_map)) return(breed_map[[tok]])
+
+    # try some common multiword recoveries after general cleanup
+    tok2 <- tok %>%
+      str_replace_all("-", " ") %>%
+      str_squish()
+
+    if (tok2 %in% names(breed_map)) return(breed_map[[tok2]])
+
+    # If token includes words like "MAINE COON", "SCOTTISH FOLD", etc.
+    # catch those by searching the map keys that are substrings
+    hits <- names(breed_map)[str_detect(tok2, fixed(names(breed_map)))]
+    if (length(hits) > 0) return(breed_map[[hits[[1]]]])
+
+    # drop clearly unknown codes
+    if (tok %in% unknown_tokens) return(NA_character_)
+
+    # If "MIX" token appears as its own part, drop it (we already set is_mix)
+    if (tok == "MIX") return(NA_character_)
+
+    # Otherwise, keep readable token (e.g., already full name like "ABYSSINIAN", "RUSSIAN BLUE")
+    str_to_title(tok2)
+  })
+
+  canon <- unique(na.omit(canon))
+  if (length(canon) == 0) return(NA_character_)
+
+  # If only one breed and string didn't indicate a mix → just that breed
+  if (!is_mix && length(canon) == 1) {
+    return(canon[1])
+  }
+
+  # Otherwise, present as a mix of the mapped breeds
+  paste0(paste(canon, collapse = " / "), " Mix")
+}
+
+# --- Apply to both columns, prioritize VMACS, then LABL ---
+all_wsis_breed <- all_wsis_age %>%
+  mutate(
+    vmacs_breed_norm = map_chr(vmacs_breed, normalize_breed),
+    labl_breed_norm  = map_chr(labl_breed,  normalize_breed),
+    breed   = coalesce(vmacs_breed_norm, labl_breed_norm)
+  )
+
+#a few slides lacked processing lab info - pulled from original labl
+labl_2020_pilot <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_samples/labl_2020_demo/input/processing_lab.xlsx") %>%
+  rename(processing_lab_new = processing_lab)
+
+all_wsis_lab_prep <- all_wsis_breed %>%
+  left_join(labl_2020_pilot) %>%
+  mutate(processing_lab = ifelse(is.na(processing_lab), processing_lab_new, processing_lab))
+
+#use deidentified lab numbers instead of lab names (same keys as in ai-based quantification paper)
+
+lab_map_text <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/lab_key.xlsx")     
+
+all_wsis_lab <- all_wsis_lab_prep %>%
+  left_join(lab_map_text) 
+
+excluded_wsis_manual_fragment_review <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_manual_fragment_review.json") %>%
+  mutate(exclusion_step = "manual_review")
+
+excluded_wsis_automated_mucosa_classification <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_automated_mucosa_classification.json") %>% 
+  mutate(exclusion_step = "automated_mucosa_classification") %>% select(image_name, exclusion_reason, exclusion_step)
+
+excluded_wsis_improbable_values <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/exluded_wsis_improbable_values.json") %>%
+  mutate(exclusion_reason = "improbable_feature_values",
+         exclusion_step = "feature_extraction") %>%
+  select(image_name, exclusion_reason, exclusion_step)
+
+exclusion_reasons <- bind_rows(excluded_wsis_manual_fragment_review, excluded_wsis_automated_mucosa_classification, excluded_wsis_improbable_values)
+
+all_wsis_info  <- all_wsis_lab %>% 
+  left_join(exclusion_reasons) %>%
+  mutate(source = case_when((processing_lab == "pmi" | processing_lab == "tamu") ~ "local",
+                            (processing_lab != "pmi" & processing_lab != "tamu") ~ "external",
+                            TRUE ~ NA),
+         model_development_set = case_when((use_set_labl_2020 == "training" | use_set_labl_2020 == "tuning") ~ TRUE,
+                                            TRUE ~ FALSE),
+         model_test_set = case_when(use_set_labl_2020 == "test" ~ TRUE,
+                                    TRUE ~ FALSE),
+         pathologist_grading_set = ifelse(processing_batch == "batch_0", TRUE, FALSE),
+         feature_tuning_set = ifelse((processing_batch == "batch_1" & is.na(exclusion_reason)), TRUE, FALSE),
+         analysis_set = ifelse(is.na(exclusion_reason), TRUE, FALSE)) %>%
+  mutate(
+    breed_simplified = case_when(
+      str_detect(breed, regex("mix", ignore_case = TRUE)) ~ "Mix",
+      breed %in% c(
+        "DSH", "DLH", "DMH",
+        "Siamese", "Persian", "Maine Coon", "Himalayan", "Bengal", "Abyssinian"
+      ) ~ breed,
+      is.na(breed) ~ NA,
+      TRUE ~ "Other"
+    ),
+    age_years = ifelse(age_years > 50, NA, age_years)) %>% #remove improbable
+
+  select(image_name, 
+         source, lab_no, 
+         scanner, scanning_location,
+         vmacs_patient_id,
+         vmacs_visit_id,
+         age_years, breed, breed_simplified,
+         bx_year, bx_id, bx_slide, staining, 
+         exclusion_reason,
+         exclusion_step,
+         model_development_set,
+         model_test_set,
+         pathologist_grading_set,
+         feature_tuning_set,
+         analysis_set
+         
+         )
+
+write_json(all_wsis_info, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_info.json", pretty = TRUE)
+
+```
+
+### Add llm parsed info on small intestinal segment, histopathological diagnosis and modalities
+```{r}
+all_wsis_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_info.json")
+
+parsed_vmacs <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_gross_dx_gpt4o_batch_output.json") %>%
+  select(-custom_id, -content_filter_triggered, -correct_json_format) %>%
+  # add "_vmacs" to all columns except the first three that remain
+  rename_with(
+    ~ paste0(.x, "_vmacs"),
+    # columns from the 4th onward (after removing the first 3)
+    .cols = -(1:3)
+  ) %>%
+  mutate(across(
+    -c(1:3), 
+    ~ na_if(tolower(.), "na")
+  )) %>%
+  mutate(across(
+    -c(1:3),
+    ~ ifelse(
+        tolower(.) == "true",  "TRUE",
+        ifelse(tolower(.) == "false", "FALSE", .)
+      )
+  ))
+  
+parsed_labl <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_labl_gpt4o_batch_output.json") %>%
+  filter(match == "TRUE") %>%
+  select(-custom_id, -content_filter_triggered, -correct_json_format, - match, -bx_id, - bx_slide) %>%
+  # add "_vmacs" to all columns except the first three that remain
+  rename_with(
+    ~ paste0(.x, "_labl"),
+    # columns from the 4th onward (after removing the first 3)
+    .cols = -(1)
+  ) %>%
+  mutate(across(
+    -c(1), 
+    ~ na_if(tolower(.), "na")
+  )) %>%
+  mutate(across(
+    -c(1),
+    ~ ifelse(
+        tolower(.) == "true",  "TRUE",
+        ifelse(tolower(.) == "false", "FALSE", .)
+      )
+  ))
+
+all_wsis_info_vmacs_labl <- all_wsis_info %>%
+  left_join(parsed_vmacs) %>%
+  left_join(parsed_labl) %>%
+  mutate(small_intestinal_segment = case_when(!is.na(si_segment_vmacs) ~ si_segment_vmacs, 
+                                              TRUE ~ si_segment_labl),
+         histopathological_diagnosis = case_when(!is.na(bx_dx_vmacs) ~ bx_dx_vmacs, 
+                                              TRUE ~ bx_dx_labl),
+         lymphoplasmacytic_enteritis = case_when(
+           (enteritis_lymphocytic_vmacs == "TRUE" & enteritis_other_vmacs == "FALSE")  ~ TRUE,
+           (is.na(enteritis_lymphocytic_vmacs) & enteritis_lymphocytic_labl == "TRUE" & enteritis_other_labl == "FALSE") ~ TRUE,
+           TRUE ~ FALSE),
+         enteritis_other = case_when(
+           (enteritis_other_vmacs == "TRUE")  ~ TRUE,
+           (is.na(enteritis_other_vmacs) & enteritis_other_labl == "TRUE") ~ TRUE,
+           TRUE ~ FALSE),
+         enteritis_grade = case_when(!is.na(enteritis_grade_vmacs) ~ enteritis_grade_vmacs,
+                                     is.na(enteritis_grade_vmacs) & !is.na(enteritis_grade_labl) ~ enteritis_grade_labl,
+                                           TRUE ~ NA)) %>%
+  mutate(enteritis_grade = case_when(enteritis_grade == "minimal__mild" ~ "mild",
+                                     enteritis_grade == "mild__moderate" ~ "moderate",
+                                     enteritis_grade == "moderate__severe" ~ "marked",
+                                     enteritis_grade == "mild_to_moderate" ~ "moderate",
+                                     enteritis_grade == "minimal__moderate" ~ "moderate",
+                                     enteritis_grade == "moderate__marked" ~ "marked",
+                                     enteritis_grade == "minimal" ~ "mild",
+                                     enteritis_grade == "severe" ~ "marked",
+                                     TRUE ~ enteritis_grade
+                                     )) %>%
+    mutate(lymphoma = case_when(lymphoma_vmacs == "TRUE" ~ TRUE,
+                                (is.na(lymphoma_vmacs) & lymphoma_labl == "TRUE") ~ TRUE,
+                                TRUE ~ FALSE),
+           lymphoma_cell_size = case_when(
+             (lymphoma & !is.na(lymphoma_cell_size_vmacs)) ~ lymphoma_cell_size_vmacs,
+             (lymphoma & is.na(lymphoma_cell_size_vmacs) & !is.na(lymphoma_cell_size_labl)) ~ lymphoma_cell_size_labl,
+                                                 TRUE ~ NA)) %>%
+  mutate(lymphoma_cell_size = case_when(lymphoma_cell_size == "small__intermediate" ~ "intermediate",
+                                        lymphoma_cell_size == "intermediate__large" ~ "large",
+                                        lymphoma_cell_size == "medium" ~ "intermediate",
+                                        lymphoma_cell_size == "small__large" ~ "large",
+                                        TRUE ~ lymphoma_cell_size)) %>%
+  mutate(lymphoma_immunophenotype = case_when(
+             (lymphoma & !is.na(lymphoma_immunophenotype_vmacs)) ~ lymphoma_immunophenotype_vmacs,
+             (lymphoma & is.na(lymphoma_immunophenotype_vmacs) & !is.na(lymphoma_immunophenotype_labl)) ~ lymphoma_immunophenotype_labl,
+             TRUE ~ NA)) %>%
+  mutate(lymphoma_immunophenotype = ifelse(lymphoma_immunophenotype == "b__t", "b", lymphoma_immunophenotype)) %>%
+  mutate(lymphoma_epitheliotropism = case_when(
+    (lymphoma & lymphoma_epitheliotropism_vmacs == "TRUE") ~ TRUE,
+    (lymphoma & is.na(lymphoma_epitheliotropism_vmacs) & lymphoma_epitheliotropism_labl == "TRUE") ~ TRUE,
+    TRUE ~ FALSE)) %>%
+  mutate(clonality = ifelse(is.na(clonality_labl), FALSE, TRUE)) %>% #use presence in labl archive since low ppv of clonality mention in vmacs (<0.7) 
+  mutate(normal = case_when(normal_vmacs == "TRUE" ~ TRUE,
+                            (is.na(normal_vmacs) & normal_labl == "TRUE") ~ TRUE,
+                            TRUE ~ FALSE)) %>%
+  mutate(neoplasia_other = case_when(neoplasia_other_vmacs == "TRUE" ~  TRUE,
+                                     TRUE ~ FALSE),
+         diagnosis_other = case_when (dx_other_vmacs == "TRUE" ~  TRUE,
+                                      TRUE ~ FALSE)) %>%
+  
+  select(image_name:staining, 
+       small_intestinal_segment:lymphoma_epitheliotropism, 
+       neoplasia_other, diagnosis_other, normal,
+       clonality,
+       exclusion_reason, model_development_set, model_test_set, pathologist_grading_set,feature_tuning_set, analysis_set ) 
+
+
+write_json(all_wsis_info_vmacs_labl, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_parsed_info.json", pretty = TRUE)
+```
+
+###Explore diagnoses and simplify
+```{r}
+all_wsis_info_vmacs_labl <- fromJSON( "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_parsed_info.json") %>%
+  mutate(small_intestinal_segment = case_when(
+    small_intestinal_segment == "unspecified" ~ NA,
+    small_intestinal_segment == "colon" ~ NA,
+    small_intestinal_segment == "cecum" ~ NA,
+    small_intestinal_segment == "duodenum__jejunum" ~ "Mixed",
+    small_intestinal_segment == "duodenum__jejunum__ileum" ~ "Mixed",
+    small_intestinal_segment == "jejunum__ileum" ~ "Mixed",
+    small_intestinal_segment == "distal_jejunum__duodenum"  ~ "Mixed",
+    small_intestinal_segment == "duodenum__ileum"  ~ "Mixed",
+    small_intestinal_segment == "proximal_jejunum" ~ "Jejunum",
+    small_intestinal_segment == "distal_jejunum" ~ "Jejunum",
+    small_intestinal_segment == "jejunum__duodenum" ~ "Mixed",
+    small_intestinal_segment == "ileum__duodenum" ~ "Mixed",
+    small_intestinal_segment == "ascending_duodenum" ~ "Duodenum",
+    small_intestinal_segment == "descending_duodenum" ~ "Duodenum",
+    small_intestinal_segment == "ileum__cecum" ~ "Ileum",
+    small_intestinal_segment == "duodenum" ~ "Duodenum",
+    small_intestinal_segment == "jejunum" ~ "Jejunum",
+    small_intestinal_segment == "ileum" ~ "Ileum",
+    TRUE ~ small_intestinal_segment),
+    diagnosis_other = case_when(histopathological_diagnosis == "lymphoid_hyperplasia" ~ TRUE,
+                                 histopathological_diagnosis == "diffuse_muscular_hypertrophy" ~ TRUE,
+                                histopathological_diagnosis == "lymphoplasmacytic_colitis" ~ TRUE,
+                                 TRUE ~ diagnosis_other
+                                 ),
+    neoplasia_other = case_when(histopathological_diagnosis == "mast_cell_tumor" ~ TRUE,
+                                 TRUE ~ neoplasia_other
+                                 ),
+    lymphoplasmacytic_enteritis = case_when(histopathological_diagnosis == "uninterpretable" ~ TRUE,
+                                 TRUE ~ lymphoplasmacytic_enteritis
+                                 ) #single case inferred from comment (clonality uninterpretable)
+    )
+    
+unique_combinations <- all_wsis_info_vmacs_labl %>%
+  count(
+    lymphoplasmacytic_enteritis,
+    enteritis_other,
+    lymphoma,
+    neoplasia_other,
+    diagnosis_other,
+    normal,
+    name = "n"
+  )
+
+lymphomas <- all_wsis_info_vmacs_labl %>%
+  filter(lymphoma)
+
+unique_combinations_lymphomas <- lymphomas %>%
+  count(
+    lymphoma_cell_size,
+    lymphoma_immunophenotype,
+    lymphoma_epitheliotropism,
+    name = "n"
+  )
+
+lpes <- all_wsis_info_vmacs_labl %>%
+  filter(lymphoplasmacytic_enteritis) 
+
+unique_combinations_lpe <- lpes %>%
+  count(
+    enteritis_grade,
+    name = "n"
+  )
+
+
+all_wsis_simplified_dx <- all_wsis_info_vmacs_labl %>%
+  #unique combination of high level diagnosis (ignoring diagnosis other - oversensitive)
+  mutate(simplified_dx = case_when((lymphoma 
+                                    & !lymphoplasmacytic_enteritis
+                                    & !enteritis_other
+                                    & !neoplasia_other) ~ "Lymphoma",
+                                   (lymphoplasmacytic_enteritis 
+                                    & !lymphoma
+                                    & !neoplasia_other) ~ "LPE",
+                                   (lymphoplasmacytic_enteritis
+                                    & lymphoma) ~ "Multiple",
+                                   normal ~ "Normal",
+                                   ((enteritis_other |
+                                      neoplasia_other |
+                                      diagnosis_other)
+                                    & !lymphoma
+                                    & !lymphoplasmacytic_enteritis) ~ "Other",
+                                   (lymphoma
+                                    & (enteritis_other | neoplasia_other)) ~ "Multiple",
+                                   (lymphoplasmacytic_enteritis
+                                    & neoplasia_other
+                                    &!lymphoma) ~ "Multiple",
+                                   TRUE ~ NA),
+         dx_categories = case_when((simplified_dx == "Other"
+                                       & neoplasia_other
+                                       & !enteritis_other) ~ "Neoplasia",
+                                      (simplified_dx == "Other"
+                                       & !neoplasia_other
+                                       & enteritis_other) ~ "Enteritis",
+                                      (simplified_dx == "Other"
+                                       & neoplasia_other
+                                       & enteritis_other) ~ "Neoplasia & Enteritis",
+                                      (simplified_dx == "Other"
+                                       & !neoplasia_other
+                                       & !enteritis_other) ~ "Other",
+                                   (simplified_dx == "Multiple"
+                                       & lymphoma
+                                       & (lymphoplasmacytic_enteritis | enteritis_other)
+                                       & !neoplasia_other) ~ "Lymphoma & Enteritis",
+                                      (simplified_dx == "Multiple"
+                                       & lymphoma
+                                       & neoplasia_other) ~ "Lymphoma & Other Neoplasia",
+                                      (simplified_dx == "Multiple"
+                                       & lymphoplasmacytic_enteritis
+                                       & neoplasia_other
+                                       & !lymphoma) ~ "LPE & Other",
+                                   (simplified_dx == "Lymphoma"
+                                    & lymphoma_cell_size == "small") ~ "SCL",
+                                   (simplified_dx == "Lymphoma"
+                                    & lymphoma_cell_size == "intermediate") ~ "ICL",
+                                   (simplified_dx == "Lymphoma"
+                                    & lymphoma_cell_size == "large") ~ "LCL",
+                                   (simplified_dx == "Lymphoma"
+                                    & is.na(lymphoma_cell_size)) ~ "NOS",
+                                   (simplified_dx == "LPE"
+                                    & (enteritis_grade == "minimal" | enteritis_grade == "mild")) ~ "Mild",
+                                    (simplified_dx == "LPE"
+                                    & enteritis_grade == "moderate") ~ "Moderate",
+                                   (simplified_dx == "LPE"
+                                    & (enteritis_grade == "marked" | enteritis_grade == "severe")) ~ "Marked",
+                                   (simplified_dx == "LPE"
+                                    & is.na(enteritis_grade)) ~ "NOS",
+                                   
+                                   
+                                  
+                                      TRUE ~ NA),
+         complex_dx = case_when(dx_categories == "SCL" ~ "SCL",
+                                dx_categories == "ICL" ~ "ICL",
+                                dx_categories == "LCL" ~ "LCL",
+                                (simplified_dx ==  "Lymphoma" & dx_categories == "NOS") ~ "Lymphoma NOS",
+                                (simplified_dx == "LPE" & dx_categories == "Mild") ~ "Mild LPE",
+                                (simplified_dx == "LPE" & dx_categories == "Moderate") ~ "Moderate LPE",
+                                (simplified_dx == "LPE" & dx_categories == "Marked") ~ "Marked LPE",
+                                (simplified_dx == "LPE" & dx_categories == "NOS") ~ "LPE NOS",
+                                (dx_categories == "Lymphoma & Enteritis") ~ "Lymphoma & Enteritis",
+                                simplified_dx == "Normal" ~ "Normal",
+                                TRUE ~ "Other"))
+         
+write_json(all_wsis_simplified_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json", pretty = TRUE)
+```
+
+
+### Supplementary Figure S1
+Set composition
+```{r}
+# Fig S1 A set overlap
+all_wsis_info_vmacs_labl <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_parsed_info.json")
+
+# (1) One row per WSI to avoid double-counting
+df_sets <- all_wsis_info_vmacs_labl %>%
+  distinct(image_name, .keep_all = TRUE)
+
+# (2) Build the member lists for each set (all are logicals)
+sets <- with(df_sets, list(
+  "Model development"  = image_name[model_development_set],
+  "Model test"          = image_name[model_test_set],
+  "Pathologist grading"   = image_name[pathologist_grading_set],
+  "Feature tuning" = image_name[feature_tuning_set],
+  "Analysis"      = image_name[analysis_set]
+))
+
+# (3) Fit an area-proportional Euler diagram
+fit <- euler(sets)   # eulerr estimates circle/overlap areas from memberships
+
+# (4) Plot: areas and overlaps are proportional; add counts on the diagram
+png(
+  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/venn_eulerr_sets.png",
+   width = 7, height = 3.5, units = "in", res = 300,
+  family = "Arial",           # use Arial font
+  pointsize = 10              # sets base text size (≈ font size 10)
+)
+ 
+
+plot(
+  fit,
+  quantities = list(type = "counts"),
+  legend = TRUE,
+  edges = TRUE
+)
+
+dev.off()
+
+#Helper to combine S1b and S1c
+fix_right_legend <- function(
+  p,
+  legend_title,
+  plot_width_in   = 2.7,
+  legend_width_in = 0.8,
+  height_in       = 3.5,
+  legend_key_cm   = 0.3,
+  text_size       = 10,
+  family          = "Arial"
+) {
+  leg <- cowplot::get_legend(
+    p +
+      labs(fill = legend_title) +
+      guides(fill = guide_legend(ncol = 1)) +
+      theme(
+        legend.position   = "right",
+        legend.title      = element_text(size = text_size, family = family, face = "bold"),
+        legend.text       = element_text(size = text_size, family = family),
+        legend.key.size   = unit(legend_key_cm, "cm"),
+        legend.spacing.y  = unit(0.05, "cm"),
+        legend.box.margin = margin(0, 0, 0, 0)
+      )
+  )
+
+  p_noleg <- p + theme(legend.position = "none")
+
+  cowplot::plot_grid(
+    p_noleg, leg,
+    ncol = 2,
+    rel_widths = c(plot_width_in, legend_width_in),
+    align = "h"
+  )
+}
+
+
+#S1b - processing lab
+palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
+cols <- setNames(palette_11[1:nlevels(df_summary_lab$lab_no)], levels(df_summary_lab$lab_no))
+
+df_sets_long_lab <- all_wsis_info_vmacs_labl %>%
+  select(image_name, lab_no,
+         model_development_set, model_test_set,
+         pathologist_grading_set, feature_tuning_set,
+         analysis_set) %>%
+  pivot_longer(
+    cols = starts_with("model_") | ends_with("_set"),
+    names_to = "set",
+    values_to = "in_set"
+  ) %>%
+  filter(in_set)
+
+df_summary_lab <- df_sets_long_lab %>%
+  mutate(
+    lab_no = factor(lab_no, levels = as.character(1:11)),
+    set = factor(
+      set,
+      levels = c(
+        "model_development_set",
+        "model_test_set",
+        "pathologist_grading_set",
+        "feature_tuning_set",
+        "analysis_set"
+      ),
+      labels = c(
+        "Model development",
+        "Model test",
+        "Pathologist grading",
+        "Feature tuning",
+        "Analysis"
+      )
+    )
+  ) %>%
+  count(set, lab_no, name = "n_wsi") %>%
+  group_by(set) %>%
+  mutate(
+    percent = 100 * n_wsi / sum(n_wsi)
+  )
+
+p_lab <- ggplot(df_summary_lab, aes(x = set, y = percent, fill = lab_no)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = palette_11, drop = FALSE) +
+  labs(
+    x = NULL,
+    y = "Percentages of WSIs",
+    fill = ""
+  ) +
+  theme_bw (base_family = "Arial", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(ylim = c(0, 100))
+
+
+
+p_lab_fixed <- fix_right_legend(
+  p_lab, "Lab",
+  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
+  legend_key_cm = 0.3, text_size = 10, family = "Arial"
+
+)
+
+print(p_lab_fixed)
+
+#Fig S1C scanner
+df_sets_long_scan <- all_wsis_info_vmacs_labl %>%
+  select(image_name, scanner,
+         model_development_set, model_test_set,
+         pathologist_grading_set, feature_tuning_set,
+         analysis_set) %>%
+  pivot_longer(
+    cols = c(starts_with("model_"), ends_with("_set")),  # <-- fix here
+    names_to = "set",
+    values_to = "in_set"
+  ) %>%
+  filter(in_set)
+
+df_summary_scan <- df_sets_long_scan %>%
+  mutate(
+    set = factor(
+      set,
+      levels = c("model_development_set","model_test_set",
+                 "pathologist_grading_set","feature_tuning_set","analysis_set"),
+      labels = c("Model development","Model test",
+                 "Pathologist grading","Feature tuning","Analysis")
+    ),
+    # optional: order scanner levels
+    scanner = factor(
+      scanner,
+      levels = c("hamamatsu_nanozoomer_s360","hamamatsu_s60","hamamatsu_2.0_ht","vs120"),
+      labels = c("S360","S60","2.0-HT","VS120")
+    )
+  ) %>%
+  count(set, scanner, name = "n_wsi") %>%
+  group_by(set) %>%
+  mutate(
+    percent = 100 * n_wsi / sum(n_wsi)
+  )
+
+palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
+cols <- setNames(palette_11[1:nlevels(df_summary_scan$scanner)], levels(df_summary_scan$scanner))
+
+p_scan <- ggplot(df_summary_scan, aes(x = set, y = percent, fill = scanner)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = cols, drop = FALSE) +
+  labs(x = NULL, y = "Percentages of WSIs", fill = "") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(ylim = c(0, 100))
+
+p_scanner_fixed <- fix_right_legend(
+  p_scan, "Scanner",
+  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
+  legend_key_cm = 0.3, text_size = 10, family = "Arial"
+)
+plot(p_scanner_fixed)
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_set_distribution_barplot_with_legend.png",
+       p_lab_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/scanner_set_distribution_barplot_with_legend.png",
+       p_scanner_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+panel <- cowplot::plot_grid(
+  p_lab_fixed, p_scanner_fixed,
+  ncol = 2
+)
+
+ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_scanner_panel.png",
+  panel, width = 7, height = 3.5, units = "in", dpi = 300
+)
+```
+### Fig 3 Plot demographic and diagnostic composition of analysis set
+```{r}
+
+
+all_wsis_simplified_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json")
+
+#Fig 3a Age at time of biopsy
+df <- all_wsis_simplified_dx %>%
+  filter(analysis_set) %>%
+  mutate(
+    age_years_num = suppressWarnings(as.numeric(age_years)),
+    age_years_num = pmin(pmax(age_years_num, 0), 21),
+    
+    breed_simplified = forcats::fct_na_value_to_level(breed_simplified, "Unknown"),
+    small_intestinal_segment = forcats::fct_na_value_to_level(small_intestinal_segment, "Unknown"),
+    simplified_dx = forcats::fct_na_value_to_level(simplified_dx, "Unknown")
+  )
+
+median_age <- df %>%
+  summarise(median_age = median(age_years_num, na.rm = TRUE)) %>%
+  pull(median_age)
+
+ggplot(df, aes(x = age_years_num)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "steelblue") +
+  labs(
+    x = "Age (years)",
+    y = "Number of cases",
+    title = "Age distribution of cats in the analysis set"
+  ) +
+  theme_bw(base_family = "Arial", base_size = 10)
+
+# 2) Count WSIs per age and complete missing ages with 0
+age_counts <- df %>%
+  count(age_years_num, name = "n") %>%
+  complete(age_years_num = 0:21, fill = list(n = 0)) %>%
+  arrange(age_years_num)
+
+# 3) One stacked bar, continuous (gliding) color scale by age
+p_age_glide <- ggplot(age_counts, aes(x = "WSIs", y = n, fill = age_years_num)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.2) +  # thin separators between ages
+  scale_fill_viridis_c(name = "Age (years)", limits = c(0, 21), na.value = "grey80") +
+  labs(x = NULL, y = "Number of WSIs") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title   = element_text(hjust = 0.5)
+  )
+
+print(p_age_glide)
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/age_analysis_set.png", p_age_glide, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+#Fig 3b Breed
+
+breed_counts <- all_wsis_simplified_dx %>%
+  filter(analysis_set) %>%
+  count(breed_simplified, name = "n") %>%
+  mutate(breed_simplified = fct_reorder(breed_simplified, n, .desc = TRUE))
+
+# palette (one color per breed)
+n_breed <- nlevels(breed_counts$breed_simplified)
+pal <- brewer.pal(max(3, min(12, n_breed)), "Set3")
+if (n_breed > length(pal)) pal <- colorRampPalette(pal)(n_breed)
+
+# single stacked bar
+p_breed_glide <- ggplot(breed_counts, aes(x = "WSIs", y = n, fill = breed_simplified)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = pal, name = "Breed", drop = FALSE) +
+  labs(x = NULL, y = "Number of WSIs", fill = "Breed") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(p_breed_glide)
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/breed_analysis_set.png", p_breed_glide, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+#Fig 3c small intestinal segment
+
+si_counts <- all_wsis_simplified_dx %>%
+  filter(analysis_set) %>%
+  count(small_intestinal_segment, name = "n") %>%
+  mutate(small_intestinal_segment = fct_reorder(small_intestinal_segment, n, .desc = TRUE))
+
+# palette
+n_counts <- nlevels(si_counts$small_intestinal_segment)
+pal <- brewer.pal(max(3, min(12, n_counts)), "Set3")
+if (n_counts > length(pal)) pal <- colorRampPalette(pal)(n_counts)
+
+# single stacked bar (one bar, segments stacked)
+p_si_glide <- ggplot(si_counts, aes(x = "WSIs", y = n, fill = small_intestinal_segment)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = pal, name = "Segment", drop = FALSE) +
+  labs(x = NULL, y = "Number of WSIs",fill = "Segment" ) +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5)  )
+
+print(p_si_glide)
+
+ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/si_analysis_set.png",
+  p_si_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
+)
+```
+
+### Plot diagnoses analysis set
+```{r}
+#Fig 3D diagnosis
+
+  dx_counts <- all_wsis_simplified_dx %>%
+    filter(analysis_set) %>%
+    count(simplified_dx, name = "n") %>%
+    mutate(simplified_dx = fct_reorder(simplified_dx, n, .desc = TRUE))
+  
+  # palette (one color per breed)
+  n_counts <- nlevels(dx_counts$simplified_dx)
+  pal <- brewer.pal(max(3, min(12, n_counts)), "Set3")
+  if (n_counts> length(pal)) pal <- colorRampPalette(pal)(n_counts)
+  
+  pal <- c(
+  "LPE" = "#2171b5",
+  "Lymphoma" ="#fdae6b",
+  "Normal" = "#a1d99b",
+  "Other" = "#dadaeb",
+  "Multiple" = "#662506"
+)
+  
+  # single stacked bar
+  p_dx_glide <- ggplot(dx_counts, aes(x = "WSIs", y = n, fill = simplified_dx)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = pal, name = "Diagnosis", drop = FALSE) +
+  labs(x = NULL, y = "Number of WSIs", fill = "Diagnosis") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+  
+  print(p_dx_glide)
+  
+  ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png",
+  p_dx_glide, width = 2.33, height = 3.5, units = "in", dpi = 300
+)
+```
+### Plot diagnosis v2
+```{r}
+#Fig 3D diagnosis
+
+
+  pal <- c(
+    "Mild LPE" = "#9ecae1",
+  "Moderate LPE" = "#4292c6",
+  "Marked LPE" = "#084594",
+  "LPE NOS" = "#bcbddc",
+  "SCL" = "#fdd0a2",
+  "ICL" = "#fd8d3c",
+  "LCL" = "#99000d",
+  "Lymphoma NOS" = "#fee0d2",
+  "Lymphoma & Enteritis" = "#662506",
+  "Other" = "#ffeda0",
+  "Normal" = "#a1d99b")
+  
+  dx_counts <- all_wsis_simplified_dx %>%
+  filter(analysis_set) %>%
+  count(complex_dx, name = "n") %>%
+  mutate(complex_dx = factor(complex_dx, levels = names(pal)))
+  
+  # single stacked bar
+  p_dx_glide <- ggplot(dx_counts, aes(x = "WSIs", y = n, fill = complex_dx)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = pal, name = "Diagnosis", drop = FALSE) +
+  labs(x = NULL, y = "Number of WSIs", fill = "Diagnosis") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+  
+  print(p_dx_glide)
+  
+   ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png",
+  p_dx_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
+)
+```
+
+
+  
+ 
+### Plot diagnosis v3
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(scales)
+
+all_wsis_simplified_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json")
+
+# Desired x-axis order
+dx_order <- c("Lymphoma", "LPE", "Other", "Multiple", "Normal")
+
+# Desired legend order for dx_categories
+dxcat_levels <- c(
+  "SCL", "ICL", "LCL",
+  "Mild", "Moderate", "Marked",
+  "Enteritis", "Neoplasia", "Other", "Neoplasia & Enteritis",
+  "Lymphoma & LPE", "Lymphoma & Other", "LPE & Other",
+  "Unspecified", "NA"
+)
+
+# Palette for dx_categories (keys must match levels exactly)
+pal_dxcat <- c(
+  "SCL" = "#fdd0a2", "ICL" = "#fd8d3c", "LCL" = "#99000d",
+  "Mild" = "#c6dbef", "Moderate" = "#4292c6", "Marked" =  "#084594",
+   "Other" = "#dadaeb", "Neoplasia" = "#9e9ac8",  "Enteritis" = "#6a51a3", "Neoplasia & Enteritis" = "#3f007d",
+  "Lymphoma & LPE" = "#662506", "Lymphoma & Other" =  "#fec44f", "LPE & Other" = "#fff7bc",
+  "Unspecified" = "#f0f0f0", "NA" = "#a1d99b"
+)
+
+# Aggregate counts, enforce factor orders, and keep NA as an explicit level
+plot_df <- all_wsis_simplified_dx %>%
+  filter(analysis_set) %>%
+  mutate(
+    simplified_dx = factor(simplified_dx, levels = dx_order),
+    dx_categories = fct_explicit_na(dx_categories, na_level = "NA"),
+    dx_categories = factor(dx_categories, levels = dxcat_levels)
+  ) %>%
+  count(simplified_dx, dx_categories, name = "n")
+
+# Stacked percent bars by dx_categories
+p_dx_pct <- ggplot(plot_df, aes(x = simplified_dx, y = n, fill = dx_categories)) +
+  geom_col(position = "fill", color = "white", linewidth = 0.2) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), expand = expansion(mult = c(0, 0.02))) +
+  scale_fill_manual(
+    values = pal_dxcat,
+    breaks = dxcat_levels,   # legend order
+    drop = FALSE,
+    name = "dx_categories"
+  ) +
+  labs(x = NULL, y = "Percentage of WSIs", fill = "") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(
+    axis.title.x = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_dx_pct)
+
+  ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_pct_analysis_set.png",
+  p_dx_pct, width = 7, height = 3.5, units = "in", dpi = 300)
+```
+
+### Assemble figure panel
+```{r}
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png", p_dx_glide, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+#Figs 3 panel
+# Plot (left) + Legend (right) with fixed *absolute* widths
+fix_right_legend <- function(
+  p,
+  legend_title,
+  plot_width_in   = 2,
+  legend_width_in = 1.5,
+  height_in       = 3.5,
+  legend_key_cm   = 0.3,
+  text_size       = 10,
+  family          = "Arial"
+) {
+  # Build a consistent, single-column legend with a header
+  leg <- cowplot::get_legend(
+    p +
+      labs(fill = legend_title) +
+      guides(fill = guide_legend(ncol = 1)) +
+      theme(
+        legend.position   = "right",
+        legend.title      = element_text(size = text_size, family = family, face = "bold"),
+        legend.text       = element_text(size = text_size, family = family),
+        legend.key.size   = unit(legend_key_cm, "cm"),
+        legend.spacing.y  = unit(0.05, "cm"),
+        legend.box.margin = margin(0, 0, 0, 0)
+      )
+  )
+
+  p_noleg <- p + theme(legend.position = "none")
+
+  # Combine with absolute-ish proportions: 3.5 in plot : 1.5 in legend
+  cowplot::plot_grid(
+    p_noleg, leg,
+    ncol = 2,
+    rel_widths = c(plot_width_in, legend_width_in),
+    align = "h"
+  )
+}
+
+
+
+p_age_fixed   <- fix_right_legend(p_age_glide,   "Age (years)")
+p_breed_fixed <- fix_right_legend(p_breed_glide, "Breed")
+p_si_fixed    <- fix_right_legend(p_si_glide,    "Small intestinal segment")
+p_dx_fixed    <- fix_right_legend(p_dx_glide,    "Diagnosis")
+
+# Example: save one composite at exactly 5" x 3.5" @ 300 dpi
+ggsave("age_with_legend.png", p_age_fixed, width = 5, height = 3.5, units = "in", dpi = 300)
+
+# If you assemble a 2×2 panel of these composites:
+panel <- cowplot::plot_grid(
+  p_age_fixed, p_breed_fixed,
+  p_si_fixed,  p_dx_fixed,
+  ncol = 2
+)
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/analysis_set_panel.png", panel, width = 7, height = 7, units = "in", dpi = 300)
+
+```
+
+### Table S1 - print case data
+```{r}
+all_wsis_simplified_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json") %>%
+  rename(diagnosis = histopathological_diagnosis,
+         diagnosis_category = complex_dx) %>%
+  mutate(archive = ifelse(source == "local", "APS", "LABL"),
+         scanning_location = case_when(scanning_location == "pmi" ~ "UC Davis VSS",
+                                       TRUE ~ scanning_location),
+         scanner = case_when(scanner == "vs120" ~ "Olympus VS120",
+                             scanner == "hamamatsu_nanozoomer_s360" ~ "Hamamatsu Nanozoomer S360",
+                             scanner == "hamamatsu_s60" ~ "Hamamatsu Nanozoomer S60",
+                             scanner == "hamamatsu_2.0_ht" ~ "Hamamatsu Nanozoomer 2.0 HT",
+                             TRUE ~ scanner
+                             )) %>%
+  select(image_name, archive, lab_no:scanning_location, age_years, staining, small_intestinal_segment, exclusion_reason, model_development_set:analysis_set,  diagnosis_category, diagnosis, lymphoplasmacytic_enteritis:lymphoma, lymphoma_cell_size:lymphoma_immunophenotype, lymphoma_epitheliotropism: clonality )
+
+write_xlsx(all_wsis_simplified_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/table_s1.xlsx")
+```
+
+
