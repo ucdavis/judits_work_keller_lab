@@ -2,19 +2,16 @@
 
 ## Objective
 This is to document the paper "Unsupervised Clustering of fe si bx"
-Intended for submission to Veterinary Pathology November 2025 (and Ch 3 of JMWs 
-dissertation)
+Intended for submission to Veterinary Pathology November 2025. 
 
 ## Study Overview
-![Schematic](assets/case_material.png)
-![Schematic](assets/overview.png)
 
 ### Case Material
 - **scripts/flow_of_cases>** integrates and summarizes the inclusion/exclusion steps
 Utilizes output from the repos: <svm_archives>; <fe_si_samples> and <fe_si_images>
 - **scripts/parse_path_report**: integrates and documents diagnosis parsing from
 archives with scripts in <fe_si_platforms/azure>
-
+![Schematic](assets/case_material.png)
 
 ### Supervised DL WSI analysis
 Aiforia models (Layer, Compartments and Lymphocytes)
@@ -45,6 +42,7 @@ by mucosal fragments from DL outputs overlays
 ### Dimensionality reduction, Unsupervised clustering and diagnosis comparison
 - **scripts/clustering**
 
+![Schematic](assets/overview.png)
 
 ## Folders
 - **scripts**: Contains all scripts in pipeline
