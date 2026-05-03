@@ -367,7 +367,7 @@ write_json(tuning_description, "~/Library/CloudStorage/Box-Box/judits_work_kelle
 ```
 
 ### Prompt engineering and model selection - vmacs_dx
-GPT4o did much better then GPT4o mini on this more complex task. GPT4o did perfect in the tuning set (even catching a very complex nuance in the description that I initially missed wehreas GOT4o mini frequently returned diagnoses for the wrong slide.)
+GPT4o did much better then GPT4o mini on this more complex task. GPT4o did perfect in the tuning set (even catching a very complex nuance in the description that I initially missed whereas GPT4o mini frequently returned diagnoses for the wrong slide.)
 ```{r}
 tuning_all <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/tuning_all.json")
 
@@ -690,7 +690,7 @@ metrics_tbl_ordered <- metrics_tbl %>%
 ```
 
 
-## External (LABL) Strategry development
+## External (LABL) Strategy development
 ### Prompt engineering for labl cases
 ```{r}
 
@@ -1791,8 +1791,16 @@ excluded_wsis_improbable_values <- fromJSON( "~/Library/CloudStorage/Box-Box/jud
 
 exclusion_reasons <- bind_rows(excluded_wsis_manual_fragment_review, excluded_wsis_automated_mucosa_classification, excluded_wsis_improbable_values)
 
+exclusion_reasons_1row <- exclusion_reasons %>%
+  group_by(image_name) %>%
+  summarise(
+    exclusion_reason = paste(unique(na.omit(exclusion_reason)), collapse = "__"),
+    exclusion_step = paste(unique(na.omit(exclusion_step)), collapse = "__"),
+    .groups = "drop"
+  )
+
 all_wsis_info  <- all_wsis_lab %>% 
-  left_join(exclusion_reasons) %>%
+  left_join(exclusion_reasons_1row, by = "image_name") %>%
   mutate(source = case_when((processing_lab == "pmi" | processing_lab == "tamu") ~ "local",
                             (processing_lab != "pmi" & processing_lab != "tamu") ~ "external",
                             TRUE ~ NA),
@@ -2176,8 +2184,7 @@ fix_right_legend <- function(
 
 
 #S1b - processing lab
-palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
-cols <- setNames(palette_11[1:nlevels(df_summary_lab$lab_no)], levels(df_summary_lab$lab_no))
+
 
 df_sets_long_lab <- all_wsis_info_vmacs_labl %>%
   select(image_name, lab_no,
@@ -2217,6 +2224,9 @@ df_summary_lab <- df_sets_long_lab %>%
   mutate(
     percent = 100 * n_wsi / sum(n_wsi)
   )
+
+palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
+cols <- setNames(palette_11[1:nlevels(df_summary_lab$lab_no)], levels(df_summary_lab$lab_no))
 
 p_lab <- ggplot(df_summary_lab, aes(x = set, y = percent, fill = lab_no)) +
   geom_bar(stat = "identity") +

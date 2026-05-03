@@ -122,14 +122,14 @@ write_json(sampled_images, "~/Library/CloudStorage/Box-Box/Projects/fe_si_papers
 
 ### Sample mucosal fragments from included images
 For this chunk, one mucosal fragment for each included image is sampled.
-The images are first processed with the model "fragments" to identify tissue fraggments and classify them as original or dulicates (to remove duplicate sections), the output fragments are manually reviewed by jmw (at low magnificaiton) to exclude fragments without small intestine, with mucosa destructive lesions or with MALT. The manually reviewed fragments are then classified with the model mucosa - to isolate regions of small intestinal mucosa, and classify them based on orientation and artefact. After exclusion of mucosal segments with inadequate orientation or artefact, and mucosal segments < 500,000 um2  one mucosal segments per wsi is randomly selected.
+The images are first processed with the model "fragments" to identify tissue fragments and classify them as original or duplicates (to remove duplicate sections), the output fragments are manually reviewed by jmw (at low magnification) to exclude fragments without small intestine, with mucosa destructive lesions or with MALT. The manually reviewed fragments are then classified with the model mucosa - to isolate regions of small intestinal mucosa, and classify them based on orientation and artefact. After exclusion of mucosal segments with inadequate orientation or artefact, and mucosal segments < 500,000 um2  one mucosal segments per wsi is randomly selected.
 ```{r}
 library(jsonlite)
 library(tidyverse)
 
 set.seed(62)
 
-mucosa_metadata_grading_sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/mucosa/output/mucosa/mucosa_metadata_grading_sample.json")  %>% #n 1408 - contains copies
+  mucosa_metadata_grading_sample <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_models/fragment_quality_suite/mucosa/output/mucosa/mucosa_metadata_grading_sample.json")  %>% #n 1408 - contains copies
   group_by(name) %>%
   slice_sample(n = 1) %>%  #820 duplicates removed
   ungroup()

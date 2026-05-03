@@ -535,6 +535,10 @@ all_batches <- bind_rows(batch_0, batch_1, batch_2, batch_3, batch_4, batch_5, b
   #left_join(all_batches)
 
 #write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json", pretty = TRUE)
+```
+
+```{r}
+patient_info <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>% select(image_name, bx_id, in_labl, vmacs_patient_id)
 
 all_wsis <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json") 
 
@@ -568,7 +572,7 @@ pathologist_grading_set_wsis_mucosal_segment <- included_mucosa %>%
 message(paste0("WSIs used for model development, n = ", nrow(model_development_set)))
 message(paste0("WSIs used for model testing, n = ", nrow(model_test_set)))
 message(paste0("WSIs used for pathologist grading = ", nrow(pathologist_grading_set_wsis)))
-message(paste0("WSIs used for feature tuning n = ", nrow(feature_tuning_set_mucosa)))
+message(paste0("WSIs used for feature tuning n = ", nrow(feature_tuning_set)))
 ```
 
 

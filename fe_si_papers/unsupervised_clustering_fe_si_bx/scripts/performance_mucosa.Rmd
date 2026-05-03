@@ -48,7 +48,7 @@ template <- comparison_df %>%
         (small_intestinal_mucosa_ai == 0 | orientation_ai == 3 | artefact_ai == 3) ~ TRUE,
       TRUE ~ FALSE))
 
-summary_df <- template %>%
+summary_df_new <- template %>%
   summarise(
     tp = sum(tp),
     fp = sum(fp),
@@ -56,16 +56,25 @@ summary_df <- template %>%
     fn = sum(fn)
   ) %>%
   mutate(
-    sensitivity = tp / (tp + fn),
-    ppv = tp / (tp + fp),
-    f1 = 2 * ppv * sensitivity / (ppv + sensitivity)
-  )
+      sensitivity = if_else(tp + fn > 0, tp / (tp + fn), NA_real_),
+      specificity = if_else(tn + fp > 0, tn / (tn + fp), NA_real_),
+      ppv         = if_else(tp + fp > 0, tp / (tp + fp), NA_real_),
+      npv         = if_else(tn + fn > 0, tn / (tn + fn), NA_real_),
+      balanced_accuracy = if_else(
+  !is.na(sensitivity) & !is.na(specificity),
+  (sensitivity + specificity) / 2,
+  NA_real_
+),
+      f1          = if_else(ppv + sensitivity > 0,
+                            2 * ppv * sensitivity / (ppv + sensitivity),
+                            NA_real_)
+    )
 
-write_xlsx(template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_template_mucosa.xlsx")
+#write_xlsx(template, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_template_mucosa.xlsx")
 
-write_json(summary_df, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_mucosa.json", pretty = TRUE)
+#write_json(summary_df, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/performance_mucosa/performance_mucosa.json", pretty = TRUE)
 
-print(summary_df)
+print(summary_df_new)
 ```
         
         
