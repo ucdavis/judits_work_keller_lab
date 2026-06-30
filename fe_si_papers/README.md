@@ -23,7 +23,8 @@ to Veterinary Pathology 2025-10-03
 In progress. Intended for submission to Veterinary Pathology October 2025
 
 -**analyzing_clinical_signs_and_dignostic_patterns_for_feline_chronic_enteropathy_using_large_language_models**
-Early stage exploratory analysis. Paused. 
+Early stage exploratory analysis. Paused. Work available in Box (Box > judits_work_keller_lab > fe_si_papers > llm_fce):
+https://ucdavis.app.box.com/folder/326868054543
 
 -**klj_quantifying_the_histological_orientation_of_feline_small_intestinal_tissue_using_unsupervised_machine_learning**
 JMW files pertaining to KLJs star project 2024
