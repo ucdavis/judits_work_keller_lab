@@ -2107,218 +2107,7 @@ write_json(all_wsis_simplified_dx, "~/Library/CloudStorage/Box-Box/judits_work_k
 ```
 
 
-### Supplementary Figure S1
-Set composition
-```{r}
-# Fig S1 A set overlap
-all_wsis_info_vmacs_labl <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_parsed_info.json")
 
-# (1) One row per WSI to avoid double-counting
-df_sets <- all_wsis_info_vmacs_labl %>%
-  distinct(image_name, .keep_all = TRUE)
-
-# (2) Build the member lists for each set (all are logicals)
-sets <- with(df_sets, list(
-  "Model development"  = image_name[model_development_set],
-  "Model test"          = image_name[model_test_set],
-  "Pathologist grading"   = image_name[pathologist_grading_set],
-  "Feature tuning" = image_name[feature_tuning_set],
-  "Analysis"      = image_name[analysis_set]
-))
-
-# (3) Fit an area-proportional Euler diagram
-fit <- euler(sets)   # eulerr estimates circle/overlap areas from memberships
-
-# (4) Plot: areas and overlaps are proportional; add counts on the diagram
-png(
-  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/venn_eulerr_sets.png",
-   width = 7, height = 3.5, units = "in", res = 300,
-  family = "Arial",           # use Arial font
-  pointsize = 10              # sets base text size (≈ font size 10)
-)
- 
-
-plot(
-  fit,
-  quantities = list(type = "counts"),
-  legend = TRUE,
-  edges = TRUE
-)
-
-dev.off()
-
-#Helper to combine S1b and S1c
-fix_right_legend <- function(
-  p,
-  legend_title,
-  plot_width_in   = 2.7,
-  legend_width_in = 0.8,
-  height_in       = 3.5,
-  legend_key_cm   = 0.3,
-  text_size       = 10,
-  family          = "Arial"
-) {
-  leg <- cowplot::get_legend(
-    p +
-      labs(fill = legend_title) +
-      guides(fill = guide_legend(ncol = 1)) +
-      theme(
-        legend.position   = "right",
-        legend.title      = element_text(size = text_size, family = family, face = "bold"),
-        legend.text       = element_text(size = text_size, family = family),
-        legend.key.size   = unit(legend_key_cm, "cm"),
-        legend.spacing.y  = unit(0.05, "cm"),
-        legend.box.margin = margin(0, 0, 0, 0)
-      )
-  )
-
-  p_noleg <- p + theme(legend.position = "none")
-
-  cowplot::plot_grid(
-    p_noleg, leg,
-    ncol = 2,
-    rel_widths = c(plot_width_in, legend_width_in),
-    align = "h"
-  )
-}
-
-
-#S1b - processing lab
-
-
-df_sets_long_lab <- all_wsis_info_vmacs_labl %>%
-  select(image_name, lab_no,
-         model_development_set, model_test_set,
-         pathologist_grading_set, feature_tuning_set,
-         analysis_set) %>%
-  pivot_longer(
-    cols = starts_with("model_") | ends_with("_set"),
-    names_to = "set",
-    values_to = "in_set"
-  ) %>%
-  filter(in_set)
-
-df_summary_lab <- df_sets_long_lab %>%
-  mutate(
-    lab_no = factor(lab_no, levels = as.character(1:11)),
-    set = factor(
-      set,
-      levels = c(
-        "model_development_set",
-        "model_test_set",
-        "pathologist_grading_set",
-        "feature_tuning_set",
-        "analysis_set"
-      ),
-      labels = c(
-        "Model development",
-        "Model test",
-        "Pathologist grading",
-        "Feature tuning",
-        "Analysis"
-      )
-    )
-  ) %>%
-  count(set, lab_no, name = "n_wsi") %>%
-  group_by(set) %>%
-  mutate(
-    percent = 100 * n_wsi / sum(n_wsi)
-  )
-
-palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
-cols <- setNames(palette_11[1:nlevels(df_summary_lab$lab_no)], levels(df_summary_lab$lab_no))
-
-p_lab <- ggplot(df_summary_lab, aes(x = set, y = percent, fill = lab_no)) +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = palette_11, drop = FALSE) +
-  labs(
-    x = NULL,
-    y = "Percentages of WSIs",
-    fill = ""
-  ) +
-  theme_bw (base_family = "Arial", base_size = 10) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
-  coord_cartesian(ylim = c(0, 100))
-
-
-
-p_lab_fixed <- fix_right_legend(
-  p_lab, "Lab",
-  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
-  legend_key_cm = 0.3, text_size = 10, family = "Arial"
-
-)
-
-print(p_lab_fixed)
-
-#Fig S1C scanner
-df_sets_long_scan <- all_wsis_info_vmacs_labl %>%
-  select(image_name, scanner,
-         model_development_set, model_test_set,
-         pathologist_grading_set, feature_tuning_set,
-         analysis_set) %>%
-  pivot_longer(
-    cols = c(starts_with("model_"), ends_with("_set")),  # <-- fix here
-    names_to = "set",
-    values_to = "in_set"
-  ) %>%
-  filter(in_set)
-
-df_summary_scan <- df_sets_long_scan %>%
-  mutate(
-    set = factor(
-      set,
-      levels = c("model_development_set","model_test_set",
-                 "pathologist_grading_set","feature_tuning_set","analysis_set"),
-      labels = c("Model development","Model test",
-                 "Pathologist grading","Feature tuning","Analysis")
-    ),
-    # optional: order scanner levels
-    scanner = factor(
-      scanner,
-      levels = c("hamamatsu_nanozoomer_s360","hamamatsu_s60","hamamatsu_2.0_ht","vs120"),
-      labels = c("S360","S60","2.0-HT","VS120")
-    )
-  ) %>%
-  count(set, scanner, name = "n_wsi") %>%
-  group_by(set) %>%
-  mutate(
-    percent = 100 * n_wsi / sum(n_wsi)
-  )
-
-palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
-cols <- setNames(palette_11[1:nlevels(df_summary_scan$scanner)], levels(df_summary_scan$scanner))
-
-p_scan <- ggplot(df_summary_scan, aes(x = set, y = percent, fill = scanner)) +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = cols, drop = FALSE) +
-  labs(x = NULL, y = "Percentages of WSIs", fill = "") +
-  theme_bw(base_family = "Arial", base_size = 10) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
-  coord_cartesian(ylim = c(0, 100))
-
-p_scanner_fixed <- fix_right_legend(
-  p_scan, "Scanner",
-  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
-  legend_key_cm = 0.3, text_size = 10, family = "Arial"
-)
-plot(p_scanner_fixed)
-ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_set_distribution_barplot_with_legend.png",
-       p_lab_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
-
-ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/scanner_set_distribution_barplot_with_legend.png",
-       p_scanner_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
-
-panel <- cowplot::plot_grid(
-  p_lab_fixed, p_scanner_fixed,
-  ncol = 2
-)
-
-ggsave(
-  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_scanner_panel.png",
-  panel, width = 7, height = 3.5, units = "in", dpi = 300
-)
-```
 ### Fig 3 Plot demographic and diagnostic composition of analysis set
 ```{r}
 
@@ -2937,14 +2726,77 @@ write_xlsx(table_S3_updated, "~/Library/CloudStorage/Box-Box/judits_work_keller_
 
 
 ```{r}
-#External cases used for model development and testing
-ext_model <- table_S3_updated %>% filter(archive == "LABL" & (model_development_set | model_test_set))
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx") %>% distinct()
+
+model_development_set <- table_s3 %>% filter(model_development_set)
+message(paste0("unique patients in model development set n = ", length(unique(model_development_set$patient_id))))
+message(paste0("unique cases in model development set n = ", length(unique(model_development_set$bx_id))))
+message(paste0("unique wsis in model development set n = ", length(unique(model_development_set$image_name))))
+
+model_test_set <- table_s3 %>% filter(model_test_set)
+message(paste0("unique patients in model test set n = ", length(unique(model_test_set$patient_id))))
+message(paste0("unique cases in model test set n = ", length(unique(model_test_set$bx_id))))
+message(paste0("unique wsis in model test set n = ", length(unique(model_test_set$image_name))))
+
+pathologist_grading_set <- table_s3 %>% filter(pathologist_grading_set)
+message(paste0("unique patients in pathologist grading set n = ", length(unique(pathologist_grading_set$patient_id))))
+message(paste0("unique cases in pathologist grading set n = ", length(unique(pathologist_grading_set$bx_id))))
+message(paste0("unique wsis in pathologist grading set n = ", length(unique(pathologist_grading_set$image_name))))
+
+feature_tuning_set <- table_s3 %>% filter(feature_tuning_set)
+message(paste0("unique patients in feature_tuning set n = ", length(unique(feature_tuning_set$patient_id))))
+message(paste0("unique cases in feature_tuning set n = ", length(unique(feature_tuning_set$bx_id))))
+message(paste0("unique wsis in feature_tuning set n = ", length(unique(feature_tuning_set$image_name))))
+
+analysis_set <- table_s3 %>% filter(analysis_set)
+message(paste0("unique patients in analysis set n = ", length(unique(analysis_set$patient_id))))
+message(paste0("unique cases in analysisset n = ", length(unique(analysis_set$bx_id))))
+message(paste0("unique wsis in analysis set n = ", length(unique(analysis_set$image_name))))
 ```
 
 #Updated fig S1
 ```{r}
 library(dplyr)
 library(eulerr)
+
+fix_right_legend <- function(
+  p,
+  legend_title,
+  plot_width_in   = 2,
+  legend_width_in = 1.5,
+  height_in       = 3.5,
+  legend_key_cm   = 0.3,
+  text_size       = 10,
+  family          = "Arial"
+) {
+  # Build a consistent, single-column legend with a header
+  leg <- cowplot::get_legend(
+    p +
+      labs(fill = legend_title) +
+      guides(fill = guide_legend(ncol = 1)) +
+      theme(
+        legend.position   = "right",
+        legend.title      = element_text(size = text_size, family = family, face = "bold"),
+        legend.text       = element_text(size = text_size, family = family),
+        legend.key.size   = unit(legend_key_cm, "cm"),
+        legend.spacing.y  = unit(0.05, "cm"),
+        legend.box.margin = margin(0, 0, 0, 0)
+      )
+  )
+
+  p_noleg <- p + theme(legend.position = "none")
+
+  # Combine with absolute-ish proportions: 3.5 in plot : 1.5 in legend
+  cowplot::plot_grid(
+    p_noleg, leg,
+    ncol = 2,
+    rel_widths = c(plot_width_in, legend_width_in),
+    align = "h"
+  )
+}
+
+
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx") %>% distinct()
 
 # Fig S1A - Patient-level set overlap
 
@@ -2969,7 +2821,7 @@ set_labels <- c(
 # A patient belongs to a set if ANY of their images
 # belong to that set.
 
-df_patient_sets <- table_S3_updated %>%
+df_patient_sets <- table_s3 %>%
   filter(!is.na(patient_id)) %>%
   group_by(patient_id) %>%
   summarise(
@@ -3025,6 +2877,141 @@ plot(
 )
 
 dev.off()
-```
 
+#S1b - processing lab
+
+
+df_sets_long_lab <- table_s3  %>%
+  select(image_name, lab_no,
+         model_development_set, model_test_set,
+         pathologist_grading_set, feature_tuning_set,
+         analysis_set) %>%
+  pivot_longer(
+    cols = starts_with("model_") | ends_with("_set"),
+    names_to = "set",
+    values_to = "in_set"
+  ) %>%
+  filter(in_set)
+
+df_summary_lab <- df_sets_long_lab %>%
+  mutate(
+    lab_no = factor(lab_no, levels = as.character(1:11)),
+    set = factor(
+      set,
+      levels = c(
+        "model_development_set",
+        "model_test_set",
+        "pathologist_grading_set",
+        "feature_tuning_set",
+        "analysis_set"
+      ),
+      labels = c(
+        "Model development",
+        "Model test",
+        "Pathologist grading",
+        "Feature tuning",
+        "Analysis"
+      )
+    )
+  ) %>%
+  count(set, lab_no, name = "n_wsi") %>%
+  group_by(set) %>%
+  mutate(
+    percent = 100 * n_wsi / sum(n_wsi)
+  )
+
+palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
+cols <- setNames(palette_11[1:nlevels(df_summary_lab$lab_no)], levels(df_summary_lab$lab_no))
+
+p_lab <- ggplot(df_summary_lab, aes(x = set, y = percent, fill = lab_no)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = palette_11, drop = FALSE) +
+  labs(
+    x = NULL,
+    y = "Percentages of WSIs",
+    fill = ""
+  ) +
+  theme_bw (base_family = "Arial", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(ylim = c(0, 100))
+
+
+
+p_lab_fixed <- fix_right_legend(
+  p_lab, "Lab",
+  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
+  legend_key_cm = 0.3, text_size = 10, family = "Arial"
+
+)
+
+print(p_lab_fixed)
+
+#Fig S1C scanner
+df_sets_long_scan <- table_s3  %>%
+  select(image_name, scanner,
+         model_development_set, model_test_set,
+         pathologist_grading_set, feature_tuning_set,
+         analysis_set) %>%
+  pivot_longer(
+    cols = c(starts_with("model_"), ends_with("_set")),  # <-- fix here
+    names_to = "set",
+    values_to = "in_set"
+  ) %>%
+  filter(in_set)
+
+df_summary_scan <- df_sets_long_scan %>%
+  mutate(
+    set = factor(
+      set,
+      levels = c("model_development_set","model_test_set",
+                 "pathologist_grading_set","feature_tuning_set","analysis_set"),
+      labels = c("Model development","Model test",
+                 "Pathologist grading","Feature tuning","Analysis")
+    ),
+    # optional: order scanner levels
+    scanner = factor(
+      scanner,
+      levels = c("Hamamatsu Nanozoomer S360","Hamamatsu Nanozoomer S60","Hamamatsu Nanozoomer 2.0 HT","Olympus VS120"),
+      labels = c("S360","S60","2.0-HT","VS120")
+    )
+  ) %>%
+  count(set, scanner, name = "n_wsi") %>%
+  group_by(set) %>%
+  mutate(
+    percent = 100 * n_wsi / sum(n_wsi)
+  )
+
+palette_11 <- RColorBrewer::brewer.pal(11, "Set3")
+cols <- setNames(palette_11[1:nlevels(df_summary_scan$scanner)], levels(df_summary_scan$scanner))
+
+p_scan <- ggplot(df_summary_scan, aes(x = set, y = percent, fill = scanner)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = cols, drop = FALSE) +
+  labs(x = NULL, y = "Percentages of WSIs", fill = "") +
+  theme_bw(base_family = "Arial", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(ylim = c(0, 100))
+
+p_scanner_fixed <- fix_right_legend(
+  p_scan, "Scanner",
+  plot_width_in = 2.7, legend_width_in = 0.8, height_in = 3.5,
+  legend_key_cm = 0.3, text_size = 10, family = "Arial"
+)
+plot(p_scanner_fixed)
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_set_distribution_barplot_with_legend.png",
+       p_lab_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/scanner_set_distribution_barplot_with_legend.png",
+       p_scanner_fixed, width = 3.5, height = 3.5, units = "in", dpi = 300)
+
+panel <- cowplot::plot_grid(
+  p_lab_fixed, p_scanner_fixed,
+  ncol = 2
+)
+
+ggsave(
+  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/lab_scanner_panel.png",
+  panel, width = 7, height = 3.5, units = "in", dpi = 300
+)
+```
 
