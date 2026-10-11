@@ -1010,8 +1010,8 @@ ggplot(cor_avg, aes(x = `Quantitative feature`, y = `Pathologist grade`, fill = 
   ) +
   scale_y_discrete(limits = rev) +  # optional: flip y order to look like a table
   labs(
-    x = "AI-Derived Feature",
-    y = "Pathologist-Graded Feature"
+    x = "Quantitative Feature",
+    y = "Pathologist Grade"
   ) +
   theme_bw(base_size = 9, base_family = "Arial") +
   theme(
