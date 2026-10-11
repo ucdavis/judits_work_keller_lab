@@ -187,7 +187,7 @@ corrected here.
 These cases are corrected from "missing" in the manual review. 
 
 ```{r}
-not_missing <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/flow_of_cases//not_missing.json")
+#not_missing <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/flow_of_cases//not_missing.json")
 
 exclusions <- not_missing %>% 
   filter(!included) %>% 
@@ -237,7 +237,7 @@ WSIs retrieved.
 - One scanned slide does not open correctly in qupath - suspect subtle metadata scanning error
 24B0107_T6_he_2024-02-01. Would have been excluded anyway beacuse of artefact. Count as failed scan.
 ```{r}
-failed_scans <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/flow_of_cases//failed_scans.json") 
+#failed_scans <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx//output/flow_of_cases//failed_scans.json") 
 
 scanned <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
   filter(in_vmacs & vmacs_bx_year > 1998) %>%
@@ -270,13 +270,19 @@ counted towards the local pipeline (even if used in the previous labl study)
 - Only H&E were scanned for this
 
 ```{r}
-outside_cases <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json") %>%
-  filter(!in_vmacs) %>%
-  filter(staining == "he")
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
 
-message(paste0("Outside WSIs  n = ", nrow(outside_cases)))
-message(paste0("Outside cases n = ", length(unique(outside_cases$bx_id))))
+aps <- table_s3 %>% filter(archive == "APS")
+
+labl <- table_s3 %>% filter(archive == "LABL")
+
+message(paste0("Unique LABL cases n = ", nrow(labl)))
+message(paste0("Unique LABL patients n = ", length(unique(labl$patient_id))))
+
+message(paste0("Unique APS cases n = ", nrow(aps)))
+message(paste0("Unique APS patients n = ", length(unique(aps$patient_id)))) 
 ```
+
 
 #### All WSIs
 Scanned VMACS cases and scanned outside cases (LABL external submissions)
@@ -291,6 +297,12 @@ message(paste0("All WSIs (local and outside cases)  n = ", nrow(all_wsis)))
 message(paste0("All cases n = ", length(unique(all_wsis$bx_id))))
 
 #write_json(all_wsis, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases//all_wsis.json", pretty = TRUE)
+
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
+
+message(paste0("xcheck all wsis n = ", nrow(table_s3)))
+message(paste0("xcheck All cases n = ", length(unique(table_s3$bx_id))))
+message(paste0("xcheck unique patients n = ", length(unique(table_s3$patient_id))))
 ```
 
 ### Fragment processing
@@ -338,7 +350,7 @@ message(paste0("Poor quality n = ", nrow(quality)))
 message(paste0("Lesion n = ", nrow(lesion)))
 message(paste0("MALT n = ", nrow(malt)))
 
-write_json(excluded_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_fragments.json", pretty = TRUE)
+#write_json(excluded_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_fragments.json", pretty = TRUE)
 ```
 ### Included fragments 
 ```{r, warning=FALSE}
@@ -357,8 +369,13 @@ message(paste0("Included fragments, patients n = ", length(unique_local_pt) + le
 message(paste0("Included fragments, WSIs n = ", length(unique(included_fragments$image_name))))
 message(paste0("Included fragments, fragments n = ", nrow(included_fragments)))
 
-write_json(included_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_fragments.json", pretty = TRUE)
+#write_json(included_fragments, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_fragments.json", pretty = TRUE)
 
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx") %>%
+  filter(image_name %in% included_fragments$image_name)
+         
+message(paste0("unique patients n = ", length(unique(table_s3$patient_id))))
+message(paste0("unique cases n = ", length(unique(table_s3$bx_id))))
 ```
 
 ### Excluded wsis after manual review
@@ -389,7 +406,7 @@ excluded_wsis_manual_fragment_review <- excluded_fragments %>%
                                       
          ))
 
-write_json(excluded_wsis_manual_fragment_review, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_manual_fragment_review.json", pretty = TRUE)
+#write_json(excluded_wsis_manual_fragment_review, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/excluded_wsis_manual_fragment_review.json", pretty = TRUE)
 
 ```
 
@@ -416,6 +433,8 @@ message(paste0("Too small, mucosal segments n = ", nrow(too_small)))
 message(paste0("No mucosa, mucosal segments n = ", nrow(no_mucosa)))
 message(paste0("Poor quality, mucosal segments n = ", nrow(poor_quality))) # see deviations
 message(paste0("Improbable outliers n = ", nrow(improbable_outliers)))
+
+
 ```
 
 
@@ -433,7 +452,7 @@ included_mucosa <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_l
   filter((artefact_class == "adequate" | artefact_class == "marginal")
          & (orientation_class == "adequate" | orientation_class == "marginal"))
 
-write_json(included_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
+#write_json(included_mucosa, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/flow_of_cases/included_mucosa.json")
 
 #remove mucosal segments excluded at late stage for improbale feature values
 improbable_outliers <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/explore_unscaled/improbabilities_all.json")
@@ -452,7 +471,10 @@ message(paste0("Included mucosa, WSIs n = ", length(unique(included_mucosa$image
 message(paste0("Included mucosa, fragments n = ", length(unique(included_mucosa$image_fragment))))
 message(paste0("Included mucosa, mucosal segments n = ", nrow(included_mucosa)))
 
-
+table_s3 <- read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx") %>%
+  filter(image_name %in% included_mucosa$image_name)
+message(paste0("unique cases n = ", length(unique(table_s3$bx_id))))         
+message(paste0("unique patients n = ", length(unique(table_s3$patient_id))))
 ```
 
 ### Excluded automated mucosa

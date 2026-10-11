@@ -2397,7 +2397,7 @@ p_breed_glide <- ggplot(breed_counts, aes(x = "WSIs", y = n, fill = breed_simpli
 
 print(p_breed_glide)
 
-ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/breed_analysis_set.png", p_breed_glide, width = 3.5, height = 3.5, units = "in", dpi = 300)
+#ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/breed_analysis_set.png", p_breed_glide, width = 3.5, height = 3.5, units = "in", dpi = 300)
 
 #Fig 3c small intestinal segment
 
@@ -2424,10 +2424,10 @@ p_si_glide <- ggplot(si_counts, aes(x = "WSIs", y = n, fill = small_intestinal_s
 
 print(p_si_glide)
 
-ggsave(
+#ggsave(
   "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/si_analysis_set.png",
-  p_si_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
-)
+#  p_si_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
+#)
 ```
 
 ### Plot diagnoses analysis set
@@ -2467,10 +2467,10 @@ ggsave(
   
   print(p_dx_glide)
   
-  ggsave(
+  #ggsave(
   "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png",
-  p_dx_glide, width = 2.33, height = 3.5, units = "in", dpi = 300
-)
+#  p_dx_glide, width = 2.33, height = 3.5, units = "in", dpi = 300
+#)
 ```
 ### Plot diagnosis v2
 ```{r}
@@ -2509,11 +2509,11 @@ ggsave(
 
   
   print(p_dx_glide)
-  
+  #
    ggsave(
-  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png",
-  p_dx_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
-)
+#  "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_#clustering_fe_si_bx/output/parse_path_report/dx_analysis_set.png",
+#  p_dx_glide, width = 3.5, height = 3.5, units = "in", dpi = 300
+#)
 ```
 
 
@@ -2648,7 +2648,7 @@ ggsave("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsup
 
 ```
 
-### Table S1 - print case data
+### Table S3 - print case data
 ```{r}
 all_wsis_simplified_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json") %>%
   rename(diagnosis = histopathological_diagnosis,
@@ -2665,6 +2665,366 @@ all_wsis_simplified_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_k
   select(image_name, archive, lab_no:scanning_location, age_years, staining, small_intestinal_segment, exclusion_reason, model_development_set:analysis_set,  diagnosis_category, diagnosis, lymphoplasmacytic_enteritis:lymphoma, lymphoma_cell_size:lymphoma_immunophenotype, lymphoma_epitheliotropism: clonality )
 
 write_xlsx(all_wsis_simplified_dx, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/table_s1.xlsx")
+```
+
+## Add deidentified unique patient identifiers
+This chunk is to update Supplemental Table S3 in response to reviewer suggestion
+Fall 2026 to include unique patient identifiers. The external archive (labl) does not contain any unique patient identifier numbers, so initially we separated cases 
+on biopsy submission only (both for internal and external cases for consistency) 
+adding inferred patient identifiers based on owner and pet name for the external archive and hospital patient id for the internal set would allow splitting model development and test set by patient, not just submission - increasing the robustness of both our work and the usability of our open datasets. If patient level leakage is detected it can be handled by recalculating metrics excluding overlapping patients from test set. 
+```{r}
+#pull slides from supplemental table s3 that is in either the model test set or model development set - id = image_name
+
+table_s3 <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/paper/revision_2026-04-06/updated_supplemental_material/supplemental_table_S3_wsi_metadata.xlsx", skip =3)
+
+model_sets <- table_s3 %>%
+  filter(model_development_set | model_test_set) %>%
+  select(image_name, model_development_set, model_test_set)
+
+#all images contains image_name, vmacs_patient_id, labl_case, bx_id
+
+image_index <- jsonlite::fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_images/output/index/image_index_deduplicated_2025-05-16.json")  %>% 
+   mutate(across(everything(), as.character)) %>%
+  mutate(labl_case = stringr::str_trim(labl_case)) %>%
+  separate_rows(labl_case, sep = "\\|\\|\\|")
+
+#labl raw data - contains Name, Owner, `LABL Case #`
+
+
+labl_duo <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/LABL_metadata/Feline Duodenum.xlsx")
+labl_jej <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/LABL_metadata/Feline Jejunum.xlsx")
+labl_ile <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/LABL_metadata/Feline Ileum.xlsx")
+labl_si <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/input/LABL_metadata/Feline Small Intestine.xlsx")
+
+labl <- bind_rows(labl_duo, labl_ile, labl_jej, labl_si)
+  
+labl_parsed <- labl %>%
+  filter(`LABL Case #` %in% image_index$labl_case) %>%
+  rename(labl_case = `LABL Case #`,
+         name = Name,
+         owner = Owner) %>%
+  select(labl_case, name, owner)
+
+# 1. Prepare case-level information
+labl_cases <- labl_parsed %>%
+  distinct(labl_case, name, owner)
+
+# Check that each case has only one name/owner combination
+stopifnot(!anyDuplicated(labl_cases$labl_case))
+
+# 2. Join and clean
+x <- image_index %>%
+  left_join(labl_cases, by = "labl_case") %>%
+  mutate(
+    name_clean = name %>%
+      str_remove_all("[0-9]") %>%
+      str_squish() %>%
+      str_to_lower() %>%
+      na_if(""),
+
+    owner_clean = owner %>%
+      str_squish() %>%
+      str_to_lower() %>%
+      na_if(""),
+
+    vmacs_clean = as.character(vmacs_patient_id) %>%
+      str_squish() %>%
+      na_if(""),
+
+    # Only create a matching key if BOTH fields are present
+    name_owner_key = if_else(
+      !is.na(name_clean) & !is.na(owner_clean),
+      paste(owner_clean, name_clean, sep = "||"),
+      NA_character_
+    )
+  )
+
+# 3. Find VMACS IDs associated with each LABL case
+case_lookup <- x %>%
+  filter(!is.na(vmacs_clean), !is.na(labl_case)) %>%
+  group_by(labl_case) %>%
+  summarise(
+    n_vmacs_case = n_distinct(vmacs_clean),
+    case_vmacs = if (n_distinct(vmacs_clean) == 1) {
+      first(vmacs_clean)
+    } else {
+      NA_character_
+    },
+    .groups = "drop"
+  )
+
+# 4. Find VMACS IDs associated with each name + owner
+name_lookup <- x %>%
+  filter(!is.na(vmacs_clean), !is.na(name_owner_key)) %>%
+  group_by(name_owner_key) %>%
+  summarise(
+    n_vmacs_name = n_distinct(vmacs_clean),
+    name_vmacs = if (n_distinct(vmacs_clean) == 1) {
+      first(vmacs_clean)
+    } else {
+      NA_character_
+    },
+    .groups = "drop"
+  )
+
+# 5. Resolve patient identity at the IMAGE level
+
+# Helper functions
+unique_present <- function(v) {
+  sort(unique(v[!is.na(v) & v != ""]))
+}
+
+one_or_na <- function(v) {
+  if (length(v) == 1) v[[1]] else NA_character_
+}
+
+# Collect all available patient information from LABL cases
+wsi_candidates <- x %>%
+  filter(!is.na(image_name)) %>%
+  left_join(case_lookup, by = "labl_case") %>%
+  left_join(name_lookup, by = "name_owner_key") %>%
+  mutate(
+    # Only use name + owner when it is not associated
+    # with multiple distinct VMACS patients
+    usable_name_key = if_else(
+      !is.na(name_owner_key) & is.na(n_vmacs_name),
+      name_owner_key,
+      NA_character_
+    )
+  )
+
+# Collapse to one row per image
+wsi_patient_summary <- wsi_candidates %>%
+  group_by(image_name) %>%
+  summarise(
+    # All available VMACS IDs
+    vmacs_options = list(
+      unique_present(c(vmacs_clean, case_vmacs, name_vmacs))
+    ),
+
+    # All available name + owner combinations
+    name_options = list(
+      unique_present(usable_name_key)
+    ),
+
+    # LABL cases associated with image
+    case_options = list(
+      unique_present(labl_case)
+    ),
+
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_vmacs = lengths(vmacs_options),
+    n_names = lengths(name_options),
+    n_cases = lengths(case_options)
+  )
+
+# Resolve one identity for each image
+image_patient <- wsi_patient_summary %>%
+  mutate(
+    vmacs_id = vapply(vmacs_options, one_or_na, character(1)),
+    name_id  = vapply(name_options, one_or_na, character(1)),
+    case_id  = vapply(case_options, one_or_na, character(1)),
+
+    patient_key = case_when(
+      n_vmacs == 1 ~ paste0("VMACS:", vmacs_id),
+
+      n_names == 1 ~ paste0("NAME:", name_id),
+
+      n_cases == 1 ~ paste0("CASE:", case_id),
+
+      TRUE ~ paste0("IMAGE:", image_name)
+    )
+  ) %>%
+  select(image_name, patient_key) %>%
+  arrange(image_name) %>%
+  mutate(
+    patient_id = dense_rank(patient_key)
+  )
+
+# Restore biopsy information
+image_metadata <- x %>%
+  distinct(image_name, bx_id, bx_slide)
+
+image_patient <- image_patient %>%
+  left_join(image_metadata, by = "image_name")
+
+```
+
+```{r}
+#join back with supplemental table s3
+table_s3_patient <- table_s3 %>% 
+  left_join(image_patient) %>%
+  select(image_name, archive, lab_no, patient_id, bx_id, bx_slide, scanner:clonality)
+
+
+overlapping_patients <- table_s3_patient %>%
+  group_by(patient_id) %>%
+  summarise(
+    development = any(model_development_set == TRUE, na.rm = TRUE),
+    test = any(model_test_set == TRUE, na.rm = TRUE),
+    grading = any(pathologist_grading_set == TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(development & (test | grading)) %>%
+  mutate(
+    overlap_type = case_when(
+      test & grading ~ "Both test and grading",
+      test ~ "Test set",
+      grading ~ "Pathologist grading set"
+    )
+  )
+
+# Inspect overlapping patients
+overlapping_patients
+
+# Count by overlap type
+overlapping_patients %>%
+  count(overlap_type)
+
+library(dplyr)
+library(readr)
+
+# Patients identified as overlapping
+excluded_ids <- overlapping_patients %>%
+  filter(!is.na(patient_id)) %>%
+  pull(patient_id)
+
+# Save original rows requiring reclassification
+reclassified_rows <- table_s3_patient %>%
+  mutate(original_row = row_number()) %>%
+  filter(
+    patient_id %in% excluded_ids,
+    coalesce(model_test_set, FALSE) |
+      coalesce(pathologist_grading_set, FALSE)
+  ) %>%
+  select(
+    original_row,
+    patient_id,
+    any_of(c("image_name", "bx_id", "labl_case", "vmacs_patient_id", "patient_key")),
+    model_development_set,
+    model_test_set,
+    pathologist_grading_set
+  ) %>%
+  mutate(
+    model_test_set_new = FALSE,
+    pathologist_grading_set_new = FALSE
+  )
+```
+
+
+```{r}
+#save for reference
+write_csv(reclassified_rows, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/reclassified_rows.csv")
+
+table_S3_updated <- table_s3_patient %>%
+  mutate(
+    model_test_set = if_else(
+      patient_id %in% excluded_ids,
+      FALSE,
+      model_test_set
+    ),
+    pathologist_grading_set = if_else(
+      patient_id %in% excluded_ids,
+      FALSE,
+      pathologist_grading_set
+    )
+  )
+
+write_xlsx(table_S3_updated, "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
+```
+
+
+```{r}
+#External cases used for model development and testing
+ext_model <- table_S3_updated %>% filter(archive == "LABL" & (model_development_set | model_test_set))
+```
+
+#Updated fig S1
+```{r}
+library(dplyr)
+library(eulerr)
+
+# Fig S1A - Patient-level set overlap
+
+# (1) Define sets
+set_vars <- c(
+  "model_development_set",
+  "model_test_set",
+  "pathologist_grading_set",
+  "feature_tuning_set",
+  "analysis_set"
+)
+
+set_labels <- c(
+  "Model development",
+  "Model test",
+  "Pathologist grading",
+  "Feature tuning",
+  "Analysis"
+)
+
+# (2) Collapse to one row per patient
+# A patient belongs to a set if ANY of their images
+# belong to that set.
+
+df_patient_sets <- table_S3_updated %>%
+  filter(!is.na(patient_id)) %>%
+  group_by(patient_id) %>%
+  summarise(
+    across(
+      all_of(set_vars),
+      ~ any(.x == TRUE, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+# (3) Build patient membership lists
+sets_patient <- setNames(
+  lapply(
+    set_vars,
+    function(v) df_patient_sets$patient_id[
+      df_patient_sets[[v]]
+    ]
+  ),
+  set_labels
+)
+
+# (4) Check numbers of unique patients per set
+sapply(sets_patient, length)
+
+# (5) Check for remaining development/test/grading overlap
+df_patient_sets %>%
+  filter(
+    model_development_set &
+      (model_test_set | pathologist_grading_set)
+  )
+
+# Should return zero rows following your corrections.
+
+# (6) Fit area-proportional Euler diagram
+fit_patient <- euler(sets_patient)
+
+# (7) Save figure
+png(
+  filename = "~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/venn_eulerr_patients.png",
+  width = 7,
+  height = 3.5,
+  units = "in",
+  res = 300,
+  family = "Arial",
+  pointsize = 10
+)
+
+plot(
+  fit_patient,
+  quantities = list(type = "counts"),
+  legend = TRUE,
+  edges = TRUE
+)
+
+dev.off()
 ```
 
 
