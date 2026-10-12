@@ -245,7 +245,21 @@ grading_list <- set_names(files, get_initials(files)) |>
   }) |>
   set_names(~ id_map[.])                  # list names == new IDs
 
-long_tbl <- bind_rows(grading_list, .id = "pathologist_id")
+long_tbl<- bind_rows(grading_list, .id = "pathologist_id")
+
+
+table_s3 <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
+
+pathologist_grading_set <- table_s3 %>% filter(pathologist_grading_set) 
+
+
+long_tbl <- long_tbl %>%
+  mutate(image_name = sub("_[^_]*_[^_]*$", "", name)) %>%
+  filter(image_name %in% pathologist_grading_set$image_name) %>%
+  select(-image_name)
+```
+
+```{r}
 grading_vars <- setdiff(names(long_tbl), c("name", "pathologist_id"))
 
 id_levels <- sprintf("p%02d", 1:11)
@@ -312,7 +326,7 @@ majority_grades_mode <- map_dfc(variable_frames_num, ~{
     cbind(name = names_col, grade_cols)
   }
 
-#write_json(majority_grades_mode, paste0(reproducibility_dir, "majority_grades.json"), pretty = TRUE)
+write_json(majority_grades_mode, paste0(reproducibility_dir, "majority_grades.json"), pretty = TRUE)
 ```
 
 ## Explore NA grades
@@ -477,7 +491,7 @@ kappa_summary_for_pub <- kappa_summary %>%
          )  
          
          
-#write_xlsx(kappa_summary_for_pub, paste0(reproducibility_dir, "agreement_summary_table.xlsx"))
+write_xlsx(kappa_summary_for_pub, paste0(reproducibility_dir, "agreement_summary_table.xlsx"))
 ```
 
 ### Print agreement heatmaps for each variable

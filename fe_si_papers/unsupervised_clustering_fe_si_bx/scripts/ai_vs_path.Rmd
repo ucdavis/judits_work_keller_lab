@@ -187,6 +187,10 @@ majority_grades <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_l
   rename(image_fragment_mucosa_name = name,
          villi_lamina_propria_lymphocytes_junctional_gradient = villi_lamina_propria_lymphocytes_junctiona_gradient) 
 
+table_s3 <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
+
+pathologist_grading_set <- table_s3 %>% filter(pathologist_grading_set)
+
 
 #Parse pathologist features
 long_1 <- majority_grades %>%
@@ -236,14 +240,19 @@ path <- bind_rows(long_1, long_2) %>%
                              feature == "size" ~ "Size",
                              feature == "homogeneity" ~ "Monomorphism",
                              TRUE ~ feature
-                             ))
-
-#write_json(path, paste0(output_dir, "parsed_path.json"), pretty = TRUE)
+                             ))%>% 
+  mutate(image_name = sub("_[^_]*_[^_]*$", "", image_fragment_mucosa_name)) %>%
+  filter(image_name %in% pathologist_grading_set$image_name) %>%
+  select(-image_name)
+write_json(path, paste0(output_dir, "parsed_path.json"), pretty = TRUE)
 
 
 
 ai  <- fromJSON(paste0(parse_ai_features_dir, "previous_versions/unscaled_", subset_name, ".json")) %>%
-  rename(ai_value = value) 
+  rename(ai_value = value) %>% 
+  mutate(image_name = sub("_[^_]*_[^_]*$", "", image_fragment_mucosa_name)) %>%
+  filter(image_name %in% pathologist_grading_set$image_name) %>%
+  select(-image_name)
 
 global_size <- fromJSON(paste0(parse_ai_features_dir, "previous_versions/feature_summaries_unprocessed_grading_sample.json")) %>%
   mutate(image_fragment_mucosa_name = paste(image_name, fragment_name, mucosa_name, sep = "_")) %>%
@@ -267,7 +276,9 @@ compartment_comparison_list <- list(
   `Junctional gradient` = c("Junctional distance (median)")
 )
 
+```
 
+```{r}
 #Merge pathologist and ai features
 
 # Generate merged dataframe list for each comparison
@@ -902,9 +913,9 @@ correlation_for_paper <- residuals_and_correlations %>%
   
 
 
-#write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
+write_json(residuals_and_correlations, paste0(output_dir, "path_vs_ai_correlations.json"), pretty = TRUE)
 
-#write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
+write_xlsx(correlation_for_paper, paste0(output_dir, "path_vs_ai_correlations.xlsx"))
 ```
 
 
