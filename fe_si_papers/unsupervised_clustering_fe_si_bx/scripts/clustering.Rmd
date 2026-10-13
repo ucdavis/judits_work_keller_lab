@@ -1248,3 +1248,213 @@ for (cl in clusters) {
 
 ```
 
+
+### PCA and clustering for supplemental - patient level exclusions 
+Redoing clustering - excluding wsis from patients overlapping development set and feature tuning set
+
+- exclude development set & feature tuning set from unscaled
+- rescale 
+- replot
+
+-saving figures with the suffix_supp 
+```{r}
+subset_name <- "all"
+
+# Load unscaled data
+filtered_unscaled <- fromJSON(
+  paste0(explore_unscaled_dir, "filtered_unscaled_", subset_name, ".json")
+) %>%
+  select(-ends_with("_Junctional distance (median)"))
+
+#join patient identifiers
+table_s3 <- readxl::read_xlsx("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/wsi_info_table_s3_2026-10-10.xlsx")
+
+image_patient <- table_s3 %>% select(image_name, patient_id)
+
+filtered_unscaled <- filtered_unscaled %>% left_join(image_patient)
+
+model_dev_and_feature_tuning <- table_s3 %>%
+  filter(model_development_set | feature_tuning_set)
+
+filtered_unscaled <- filtered_unscaled %>% 
+  filter(!patient_id %in% model_dev_and_feature_tuning$patient_id)
+```
+
+
+```{r}
+
+# Re-scale using only the remaining cases
+filtered_scaled <- filtered_unscaled %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE)
+    )
+  )
+
+# PCA
+pca_prep <- prepare_pca_full_analysis(filtered_scaled)
+var_cont <- pca_prep$var_contrib
+pca <- pca_prep$pca
+
+# Elbows & Silhouettes
+explore_ks <- plot_kmeans_elbow_silhouette(
+  pca,
+  pcs = 1:4,
+  kmax = 30
+)
+
+# K-means
+k_means_9 <- cluster_k(
+  pca,
+  best_k = 9,
+  filtered_unscaled,
+  pcs_used = 1:4,
+  dir = cluster_prep_dir,
+  prefix = subset_name
+)
+
+k_means_data <- k_means_9$clustered_data
+
+cluster_summary <- k_means_9$cluster_summary 
+
+
+
+# Step 1: Pivot longer all variables except Cluster and Mean Silhouette
+long_summary <- cluster_summary %>%
+  pivot_longer(-c(Cluster, `Mean silhouette`), names_to = "Variable", values_to = "Value")
+
+cluster_data <- k_means_9$clustered_data
+
+#integrate with dx
+id_col <- "image_fragment_mucosa_name"
+exclude_cols <- c("image_fragment_mucosa_name", "image_name", "fragment_name", "mucosa_name")
+
+features_only <- filtered_scaled %>% select(-all_of(exclude_cols))
+keep <- complete.cases(features_only)
+ids_kept <- filtered_scaled[[id_col]][keep]
+
+scores <- as.data.frame(pca$x[, 1:2, drop = FALSE]) %>%
+  mutate(!!id_col := ids_kept) %>%
+  relocate(!!id_col)
+```
+
+
+```{r}
+
+original_dx <- fromJSON("~/Library/CloudStorage/Box-Box/judits_work_keller_lab/fe_si_papers/unsupervised_clustering_fe_si_bx/output/parse_path_report/all_wsis_simplified_dx.json") %>%
+  filter(image_name %in%filtered_unscaled$image_name)
+
+
+dx_complex <- original_dx %>% select(image_name, complex_dx)
+combined <- filtered_scaled %>% left_join(dx_complex, by = "image_name")
+metadata_dx_complex <- combined %>% select(image_fragment_mucosa_name, complex_dx)
+
+
+
+scores_dx_complex <- scores %>%
+  left_join(metadata_dx_complex %>% select(!!sym(id_col), complex_dx), by = id_col) 
+
+dx_colors <- c(
+  "Mild LPE" = "#9ecae1",
+  "Moderate LPE" = "#4292c6",
+  "Marked LPE" = "#084594",
+  "LPE NOS" = "#bcbddc",
+  "SCL" = "#fdd0a2",
+  "ICL" = "#fd8d3c",
+  "LCL" = "#cb181d",
+  "Lymphoma NOS" = "#fee0d2",
+  "Lymphoma & Enteritis" = "#662506",
+  "Other" = "#ffeda0",
+  "Normal" = "#a1d99b")
+
+# lock factor order in legend (optional but nice)
+scores_dx_complex <- scores_dx_complex %>%
+  mutate(original_diagnosis = fct_relevel(complex_dx, names(dx_colors), after = 0))
+
+scores_dx_complex <- scores_dx_complex %>%
+  mutate(PC1 = -PC1)
+
+# ---------- 3) Axis labels ----------
+pc_var <- pca$sdev^2
+var_exp <- pc_var / sum(pc_var)
+x_lab <- sprintf("PC1 (%.1f%%)", 100 * var_exp[1])
+y_lab <- sprintf("PC2 (%.1f%%)", 100 * var_exp[2])
+
+# ---------- 4) EVERYTHING plot (PC1 vs PC2, colored by dx) ----------
+scores_plot <- scores_dx_complex %>%
+  filter(is.finite(PC1), is.finite(PC2)) %>%
+  add_count(original_diagnosis, name = "n_dx")
+
+p_pca_dx <- ggplot(scores_plot, aes(PC1, PC2, color = original_diagnosis)) +
+  geom_point(alpha = 0.6, size = 1.6) +
+  theme_bw(base_size = 9) +
+  scale_color_manual(values = dx_colors, drop = TRUE) +
+  guides(color = guide_legend(title = "Original diagnosis", override.aes = list(size = 3, alpha = 1))) +
+  labs(x = x_lab, y = y_lab, title = "PCA: PC1 vs PC2 colored by original diagnosis")
+
+print(p_pca_dx)
+
+ggsave(
+  filename = file.path(cluster_prep_dir, paste0("pca_PC1_PC2_by_original_diagnosis_supp_", subset_name, ".png")),
+  plot = p_pca_dx, width = 7, height = 3.5, dpi = 300
+)
+# Plot individual clusters (to crop for insets fig. 14)
+
+# ---------- 5) CLUSTER-BY-CLUSTER HIGHLIGHTS ----------
+scores_dx_complex <- scores_dx_complex %>%
+  left_join(
+    k_means_9$clustered_data %>% select(!!rlang::sym(id_col), cluster_label, cluster_number),
+    by = id_col
+  )
+
+plot_df_full <- scores_dx_complex %>%
+  filter(is.finite(PC1), is.finite(PC2)) %>%
+  mutate(cluster_number = as.factor(cluster_number),
+         original_diagnosis = fct_relevel(original_diagnosis, names(dx_colors), after = 0))
+
+make_cluster_highlight <- function(cluster_id) {
+  df <- plot_df_full
+  focal <- df %>% filter(cluster_number == cluster_id)
+
+  can_ellipse <- nrow(focal) >= 3
+
+  ggplot() +
+    # non-focal: light grey
+    geom_point(
+      data = df %>% filter(cluster_number != cluster_id),
+      aes(PC1, PC2),
+      color = "grey85", alpha = 0.5, size = 1.2
+    ) +
+    # focal: colored by dx using the SAME palette
+    geom_point(
+      data = focal,
+      aes(PC1, PC2, color = original_diagnosis),
+      alpha = 0.6, size = 1.8
+    )  +
+    scale_color_manual(values = dx_colors, drop = TRUE) +
+    theme_bw(base_size = 9) +
+    guides(color = guide_legend(title = "Original diagnosis",
+                                override.aes = list(size = 3, alpha = 1))) +
+    labs(
+      x = x_lab, y = y_lab,
+      title = paste0("Cluster ", cluster_id, " highlighted"),
+      subtitle = paste0("n = ", nrow(focal))
+    )
+}
+
+clusters <- sort(unique(plot_df_full$cluster_number))
+plots <- lapply(clusters, make_cluster_highlight)
+names(plots) <- paste0("cluster_", clusters)
+
+for (cl in clusters) {
+  ggsave(
+    filename = file.path(cluster_prep_dir,
+                         paste0("pca_PC1_PC2_highlight_cluster_supp_", cl, "_", subset_name, ".png")),
+    plot = plots[[paste0("cluster_", cl)]],
+    width = 7, height = 3.5, dpi = 300
+  )
+}
+
+```
+
